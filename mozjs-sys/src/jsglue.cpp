@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <type_traits>
+#include <utility>
 
 #include "js-config.h"
 
@@ -18,9 +19,11 @@
 #include "js/BuildId.h"
 #include "js/Class.h"
 #include "js/ColumnNumber.h"
+#include "js/HeapAPI.h"
 #include "js/Id.h"
 #include "js/MemoryMetrics.h"
 #include "js/Modules.h"  // include for JS::GetModulePrivate
+#include "js/Prefs.h"
 #include "js/Principals.h"
 #include "js/Promise.h"
 #include "js/Proxy.h"
@@ -36,6 +39,10 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 #include "mozilla/Unused.h"
+
+#ifndef RUST_BINDGEN
+#  include "vm/HelperThreads.h"
+#endif
 
 typedef bool (*WantToMeasure)(JSObject* obj);
 typedef size_t (*GetSize)(JSObject* obj);
@@ -1169,6 +1176,121 @@ void DeleteJSExternalStringCallbacks(JSExternalStringCallbacks* callbacks) {
 struct DispatchablePointer {
   js::UniquePtr<JS::Dispatchable> ptr;
 };
+
+// The Galileo ABI sentinel is deliberately a link-time symbol rather than a
+// header-only constant. A consumer built with these bindings cannot silently
+// link an upstream libjsglue archive that predates the Galileo entry points.
+uint32_t GalileoMozjsGlueAbi_140_12_1() { return 0x008C0C01; }
+
+void Servo_ReleaseFailedDispatchable(DispatchablePointer* dispatchable) {
+  if (!dispatchable) {
+    return;
+  }
+
+  JS::Dispatchable::ReleaseFailedTask(std::move(dispatchable->ptr));
+  delete dispatchable;
+}
+
+void Servo_EnableWasmPromiseIntegration() {
+  JS::Prefs::set_wasm_js_promise_integration(true);
+}
+
+bool Servo_SetWasmJSTagEnumerable(JSContext* cx, bool enumerable) {
+  if (!cx) {
+    return false;
+  }
+
+  JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+  if (!global) {
+    return false;
+  }
+
+  JS::RootedValue wasmValue(cx);
+  if (!JS_GetProperty(cx, global, "WebAssembly", &wasmValue) ||
+      !wasmValue.isObject()) {
+    JS_ClearPendingException(cx);
+    return false;
+  }
+
+  JS::RootedObject wasm(cx, &wasmValue.toObject());
+  JS::RootedValue tagValue(cx);
+  if (!JS_GetProperty(cx, wasm, "JSTag", &tagValue)) {
+    JS_ClearPendingException(cx);
+    return false;
+  }
+
+  // JSTag is absent when exception references are unavailable. In that case
+  // there is nothing to configure and no compatibility failure to report.
+  if (!tagValue.isObject()) {
+    return true;
+  }
+
+  unsigned attrs = JSPROP_READONLY;
+  if (enumerable) {
+    attrs |= JSPROP_ENUMERATE;
+  }
+  return JS_DefineProperty(cx, wasm, "JSTag", tagValue, attrs);
+}
+
+bool Servo_InvokeProxyGetOwnPropertyDescriptor(
+    JSContext* cx, JS::HandleObject proxy, JS::HandleId id,
+    JS::MutableHandle<JS::PropertyDescriptor> desc, bool* isNone) {
+  if (!cx || !isNone) {
+    return false;
+  }
+
+  JS::Rooted<mozilla::Maybe<JS::PropertyDescriptor>> maybeDesc(cx);
+  const js::BaseProxyHandler* handler = js::GetProxyHandler(proxy);
+  const bool result =
+      handler->getOwnPropertyDescriptor(cx, proxy, id, &maybeDesc);
+  *isNone = maybeDesc.isNothing();
+  if (!*isNone) {
+    desc.set(*maybeDesc);
+  }
+  return result;
+}
+
+bool Servo_NukeRealmWrappers(JSContext* cx, JSObject* targetGlobal) {
+  if (!cx || !targetGlobal) {
+    return false;
+  }
+
+  JS::Realm* target = JS::GetObjectRealmOrNull(targetGlobal);
+  if (!target) {
+    return false;
+  }
+
+  return js::NukeCrossCompartmentWrappers(cx, js::AllCompartments(), target,
+                                          js::NukeWindowReferences,
+                                          js::NukeAllReferences);
+}
+
+bool Servo_PrepareObjectZoneForGC(JSContext* cx, JSObject* targetGlobal) {
+  if (!cx || !targetGlobal) {
+    return false;
+  }
+
+  JS::PrepareZoneForGC(cx, JS::GetObjectZone(targetGlobal));
+  return true;
+}
+
+bool Servo_CancelOffThreadCompilesForObject(JSContext* cx,
+                                            JSObject* targetGlobal);
+
+#ifndef RUST_BINDGEN
+bool Servo_CancelOffThreadCompilesForObject(JSContext* cx,
+                                            JSObject* targetGlobal) {
+  if (!cx || !targetGlobal) {
+    return false;
+  }
+
+  JS::Zone* zone = JS::GetObjectZone(targetGlobal);
+  js::CompilationSelector selector(zone);
+  js::CancelOffThreadBaselineCompile(selector);
+  js::CancelOffThreadIonCompile(selector);
+  return true;
+}
+#endif
 
 typedef bool (*RustDispatchToEventLoopCallback)(void* closure,
                                                 DispatchablePointer* ptr);

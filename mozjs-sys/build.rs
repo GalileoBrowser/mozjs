@@ -49,7 +49,10 @@ const SM_TARGET_ENV_VARS: &'static [&'static str] = &[
     "WASI_SDK_PATH",
 ];
 
-const EXTRA_FILES: &'static [&'static str] = &["makefile.cargo"];
+const EXTRA_FILES: &'static [&'static str] = &["makefile.cargo", "src/glue.rs", "src/jsglue.cpp"];
+
+const GALILEO_GLUE_ABI_SYMBOL: &str = "GalileoMozjsGlueAbi_140_12_1";
+const GALILEO_GLUE_RELEASE_TAG: &str = "galileo-mozjs-glue-abi-140.12.1";
 
 /// The version of moztools we expect.
 #[cfg(windows)]
@@ -87,8 +90,17 @@ fn main() {
             // Panic directly since the archive is specified manually.
             archive::decompress_static_lib(&archive, &build_dir).unwrap();
         } else {
-            let result = archive::download_archive(None)
-                .and_then(|archive| archive::decompress_static_lib(&archive, &build_dir));
+            let result = archive::download_archive(None).and_then(|archive| {
+                let result = archive::decompress_static_lib(&archive, &build_dir);
+                if result.is_err() {
+                    // The automatic cache is disposable. Removing a stale or
+                    // corrupted Galileo archive lets the next build retry the
+                    // authoritative release instead of permanently pinning
+                    // this checkout to source fallback.
+                    let _ = fs::remove_file(archive);
+                }
+                result
+            });
             if let Err(e) = result {
                 println!("cargo:warning=Failed to link pre-built archive by {e}. Building from source instead.");
                 build_from_source = true;
@@ -570,7 +582,10 @@ fn cc_flags(bindgen: bool) -> Vec<&'static str> {
         }
     }
 
-    flags.extend(&["-DSTATIC_JS_API", "-DRUST_BINDGEN"]);
+    flags.push("-DSTATIC_JS_API");
+    if bindgen {
+        flags.push("-DRUST_BINDGEN");
+    }
     if env::var_os("CARGO_FEATURE_DEBUGMOZJS").is_some() {
         flags.extend(&["-DJS_GC_ZEAL", "-DDEBUG", "-DJS_DEBUG"]);
 
@@ -648,10 +663,24 @@ impl BuildTarget {
     }
 
     fn include_paths(self, build_dir: &Path) -> Vec<String> {
-        let mut paths = Vec::with_capacity(2);
+        let mut paths = Vec::with_capacity(3);
         paths.push(build_dir.join("dist").join("include").display().to_string());
-        if self == BuildTarget::JSApi {
-            paths.push(build_dir.join("js").join("src").display().to_string());
+
+        // `jsglue.cpp` contains a small, reviewed set of embedding helpers that
+        // use SpiderMonkey-private declarations. Use the configured object
+        // tree and the vendored source tree directly, just as libjs_static
+        // does. In particular, never discover headers by walking a Cargo
+        // target directory or by mirroring private C++ declarations.
+        paths.push(build_dir.join("js").join("src").display().to_string());
+        if self == BuildTarget::JSGlue {
+            paths.push(
+                PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+                    .join("mozjs")
+                    .join("js")
+                    .join("src")
+                    .display()
+                    .to_string(),
+            );
         }
         paths
     }
@@ -967,7 +996,7 @@ impl BuildTarget {
 }
 
 mod archive {
-    use super::{get_cc_rs_env_os, join_path};
+    use super::{get_cc_rs_env_os, join_path, GALILEO_GLUE_ABI_SYMBOL, GALILEO_GLUE_RELEASE_TAG};
 
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
@@ -1091,14 +1120,77 @@ mod archive {
     ) -> Result<(), std::io::Error> {
         // Try to open the archive from provided path. If it doesn't exist, try to open it as relative
         // path from workspace.
-        let tar_gz = File::open(archive).unwrap_or({
+        let tar_gz = File::open(archive).or_else(|_| {
             let mut workspace_dir = get_cargo_target_dir(build_dir).unwrap().to_path_buf();
             workspace_dir.pop();
-            File::open(workspace_dir.join(archive))?
-        });
+            File::open(workspace_dir.join(archive))
+        })?;
         let tar = GzDecoder::new(tar_gz);
         let mut archive = Archive::new(tar);
-        archive.unpack(build_dir)?;
+
+        // Never expose a partially extracted or ABI-incompatible prebuilt as
+        // the active build directory. This also makes the ordinary download
+        // path fall back to a source build when only Servo's upstream archive
+        // (which lacks Galileo's ABI sentinel) is available.
+        let staging_dir = build_dir.with_file_name("build-prebuilt-staging");
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
+        }
+        fs::create_dir_all(&staging_dir)?;
+        if let Err(error) = archive.unpack(&staging_dir) {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(error);
+        }
+
+        let validation: Result<(), std::io::Error> = (|| {
+            let bindings =
+                fs::read_to_string(staging_dir.join("gluebindings.rs")).map_err(|error| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("prebuilt mozjs archive lacks Galileo gluebindings.rs: {error}"),
+                    )
+                })?;
+            if !bindings.contains(GALILEO_GLUE_ABI_SYMBOL) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("prebuilt mozjs bindings do not provide {GALILEO_GLUE_ABI_SYMBOL}"),
+                ));
+            }
+
+            let target = env::var("TARGET").unwrap();
+            let library_name = if target.contains("windows") {
+                "jsglue.lib"
+            } else {
+                "libjsglue.a"
+            };
+            let library = fs::read(staging_dir.join(library_name)).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("prebuilt mozjs archive lacks {library_name}: {error}"),
+                )
+            })?;
+            if !library
+                .windows(GALILEO_GLUE_ABI_SYMBOL.len())
+                .any(|window| window == GALILEO_GLUE_ABI_SYMBOL.as_bytes())
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "prebuilt mozjs {library_name} does not export {GALILEO_GLUE_ABI_SYMBOL}"
+                    ),
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(error);
+        }
+
+        if build_dir.exists() {
+            fs::remove_dir_all(build_dir)?;
+        }
+        fs::rename(staging_dir, build_dir)?;
         Ok(())
     }
 
@@ -1178,7 +1270,7 @@ mod archive {
             .arg("verify")
             .arg(&archive_path)
             .arg("-R")
-            .arg("servo/mozjs");
+            .arg("GalileoBrowser/mozjs");
 
         let attestation_duration = start.elapsed();
         eprintln!(
@@ -1203,10 +1295,9 @@ mod archive {
     }
 
     /// Download the SpiderMonkey archive with cURL using the provided base URL. If it's None,
-    /// it will use `servo/mozjs`'s release page as the base URL.
+    /// it uses Galileo's ABI-versioned release rather than an ABI-incomplete upstream archive.
     pub(crate) fn download_archive(base: Option<&str>) -> Result<PathBuf, std::io::Error> {
-        let base = base.unwrap_or("https://github.com/servo/mozjs/releases");
-        let version = env::var("CARGO_PKG_VERSION").unwrap();
+        let base = base.unwrap_or("https://github.com/GalileoBrowser/mozjs/releases");
         let archive_path = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(&archive());
 
         if !archive_path.exists() {
@@ -1219,12 +1310,13 @@ mod archive {
                 .arg("-o")
                 .arg(&archive_path)
                 .arg(format!(
-                    "{base}/download/mozjs-sys-v{version}/{}",
+                    "{base}/download/{GALILEO_GLUE_RELEASE_TAG}/{}",
                     archive()
                 ))
                 .status()?
                 .success()
             {
+                let _ = fs::remove_file(&archive_path);
                 return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
             }
             eprintln!(

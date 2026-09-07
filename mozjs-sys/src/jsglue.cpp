@@ -31,6 +31,7 @@
 #include "js/ScalarType.h"
 #include "js/StructuredClone.h"
 #include "js/Wrapper.h"
+#include "js/experimental/CompileScript.h"
 #include "js/experimental/JSStencil.h"
 #include "js/experimental/JitInfo.h"
 #include "js/experimental/TypedData.h"
@@ -1180,7 +1181,55 @@ struct DispatchablePointer {
 // The Galileo ABI sentinel is deliberately a link-time symbol rather than a
 // header-only constant. A consumer built with these bindings cannot silently
 // link an upstream libjsglue archive that predates the Galileo entry points.
-uint32_t GalileoMozjsGlueAbi_140_12_1() { return 0x008C0C01; }
+uint32_t GalileoMozjsGlueAbi_140_12_2() { return 0x008C0C02; }
+
+// These opaque frontend objects contain no live JS heap values. The embedding
+// owns them exclusively and may move them between threads, but must not access
+// one concurrently. Keep the engine initialized throughout their lifetime.
+void* Servo_NewFrontendContext() { return JS::NewFrontendContext(); }
+
+void Servo_DeleteFrontendContext(void* frontend) {
+  JS::DestroyFrontendContext(static_cast<JS::FrontendContext*>(frontend));
+}
+
+// Compile on the calling helper thread, without ever borrowing the page's
+// JSContext. Options (including owned filename storage) must remain alive until
+// error conversion on the owning script thread. The source is borrowed only
+// during this call; SpiderMonkey retains its own script source in the stencil.
+void* Servo_CompileFrontendScript(void* frontend,
+                                 const JS::ReadOnlyCompileOptions* options,
+                                 const char* source, size_t length,
+                                 size_t threadStackSize) {
+  auto* fc = static_cast<JS::FrontendContext*>(frontend);
+  JS::SetNativeStackQuota(fc, JS::ThreadStackQuotaForSize(threadStackSize));
+  JS::SourceText<mozilla::Utf8Unit> text;
+  if (!text.init(fc, source, length, JS::SourceOwnership::Borrowed)) {
+    return nullptr;
+  }
+  RefPtr<JS::Stencil> stencil = JS::CompileGlobalScriptToStencil(fc, *options, text);
+  return stencil.forget().take();
+}
+
+// Instantiate only on the page's script thread, in its current realm. This
+// preserves compile options and reports native parser errors in that realm.
+// The caller must release the stencil and frontend after this function returns.
+JSScript* Servo_FinishFrontendScript(JSContext* cx, void* frontend,
+                                    const JS::ReadOnlyCompileOptions* options,
+                                    void* stencil) {
+  auto* fc = static_cast<JS::FrontendContext*>(frontend);
+  if (!JS::ConvertFrontendErrorsToRuntimeErrors(cx, fc, *options) || !stencil) {
+    return nullptr;
+  }
+  JS::InstantiateOptions instantiateOptions(*options);
+  return JS::InstantiateGlobalStencil(cx, instantiateOptions,
+                                      static_cast<JS::Stencil*>(stencil));
+}
+
+void Servo_ReleaseFrontendStencil(void* stencil) {
+  if (stencil) {
+    JS::StencilRelease(static_cast<JS::Stencil*>(stencil));
+  }
+}
 
 void Servo_ReleaseFailedDispatchable(DispatchablePointer* dispatchable) {
   if (!dispatchable) {

@@ -1,4 +1,5 @@
 [package]
+workspace = ".."
 name = "mozjs_sys"
 description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
 repository.workspace = true

@@ -9,7 +9,7 @@ import tarfile
 from pathlib import Path
 
 
-ABI_SYMBOL = b"GalileoMozjsGlueAbi_140_12_1"
+ABI_SYMBOL = b"GalileoMozjsGlueAbi_140_12_2"
 
 REQUIRED_ARCHIVES = {
     "libmozjs-aarch64-apple-darwin.tar.gz",

@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.1
+# Galileo SpiderMonkey glue ABI 140.12.2
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_1` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_2` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.1
+release tag: galileo-mozjs-glue-abi-140.12.2
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.1`.
+   `galileo-mozjs-glue-abi-140.12.2`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -77,3 +77,22 @@ and its target-directory-scanning build step, and import the helpers from
 `js::glue`. Call `js::glue::galileo_mozjs_glue_abi()` during script-runtime
 initialization and compare it with `js::glue::GALILEO_MOZJS_GLUE_ABI`; this is
 an additional runtime assertion on top of the unconditional link sentinel.
+
+## Frontend-only script preparation
+
+ABI140.12.2 adds an opaque frontend context and stencil bridge. Create the
+frontend while the engine is initialized; compile on a helper with that helper's
+actual stack-size quota. Never pass a page JSContext to the compile entry point.
+The ReadOnlyCompileOptions must have owning lifetime (including its filename)
+through error conversion. The input source is borrowed during compilation only;
+the produced stencil retains its own script source. No frontend/stencil may be
+accessed concurrently.
+
+Instantiate on the owning script thread in the correct realm. Convert native
+frontend errors there, retain normal compile options, and root the resulting
+JSScript immediately. Release the stencil and frontend on success, parser error,
+navigation cancellation and shutdown. Retain an engine lifetime guard until all
+native cleanup is finished, and join outstanding helpers before engine shutdown.
+
+This branch does not publish a crate or release automatically. New platform
+archives must satisfy the same matrix and ABI verifier before publication.

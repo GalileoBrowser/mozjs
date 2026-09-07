@@ -3,17 +3,24 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use mozjs_sys::glue::{
-    galileo_mozjs_glue_abi, GalileoMozjsGlueAbi_140_12_1, Servo_CancelOffThreadCompilesForObject,
-    Servo_EnableWasmPromiseIntegration, Servo_InvokeProxyGetOwnPropertyDescriptor,
-    Servo_NukeRealmWrappers, Servo_PrepareObjectZoneForGC, Servo_ReleaseFailedDispatchable,
-    Servo_SetWasmJSTagEnumerable, GALILEO_MOZJS_GLUE_ABI,
+    GALILEO_MOZJS_GLUE_ABI, GalileoMozjsGlueAbi_140_12_2, Servo_CancelOffThreadCompilesForObject,
+    Servo_CompileFrontendScript, Servo_DeleteFrontendContext, Servo_EnableWasmPromiseIntegration,
+    Servo_FinishFrontendScript, Servo_InvokeProxyGetOwnPropertyDescriptor,
+    Servo_NewFrontendContext, Servo_NukeRealmWrappers, Servo_PrepareObjectZoneForGC,
+    Servo_ReleaseFailedDispatchable, Servo_ReleaseFrontendStencil, Servo_SetWasmJSTagEnumerable,
+    galileo_mozjs_glue_abi,
 };
 
 #[test]
 fn generated_bindings_expose_the_complete_galileo_surface() {
     // Inferred function items deliberately make this a compile-time check of
     // gluebindings.rs without restating any SpiderMonkey-private Rust types.
-    let _ = GalileoMozjsGlueAbi_140_12_1;
+    let _ = GalileoMozjsGlueAbi_140_12_2;
+    let _ = Servo_NewFrontendContext;
+    let _ = Servo_DeleteFrontendContext;
+    let _ = Servo_CompileFrontendScript;
+    let _ = Servo_FinishFrontendScript;
+    let _ = Servo_ReleaseFrontendStencil;
     let _ = Servo_ReleaseFailedDispatchable;
     let _ = Servo_EnableWasmPromiseIntegration;
     let _ = Servo_SetWasmJSTagEnumerable;

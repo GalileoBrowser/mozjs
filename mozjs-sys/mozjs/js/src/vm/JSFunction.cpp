@@ -1349,6 +1349,29 @@ js::GeneratorKind JSFunction::clonedSelfHostedGeneratorKind() const {
   return runtimeFromMainThread()->getSelfHostedFunctionGeneratorKind(name);
 }
 
+// Dynamic Code Brand Checks: CreateDynamicFunction consults the host before
+// ordinary ToString for object arguments, just as PerformEval does. A host can
+// return the internal code of a genuine TrustedScript without running script.
+// https://tc39.es/proposal-dynamic-code-brand-checks/#sec-createdynamicfunction
+static bool DynamicFunctionArgumentString(JSContext* cx, HandleValue argument,
+                                          MutableHandleString result) {
+  // The parameter loop reuses a rooted output. A no-code callback need not
+  // overwrite it, so never carry a preceding argument's trusted code forward.
+  result.set(nullptr);
+  if (argument.isObject()) {
+    RootedObject object(cx, &argument.toObject());
+    if (!cx->getCodeForEval(object, result)) {
+      return false;
+    }
+    if (result.get()) {
+      return true;
+    }
+  }
+
+  result.set(ToString<CanGC>(cx, argument));
+  return result.get() != nullptr;
+}
+
 // ES2018 draft rev 2aea8f3e617b49df06414eb062ab44fad87661d3
 // 19.2.1.1.1 CreateDynamicFunction( constructor, newTarget, kind, args )
 static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
@@ -1429,8 +1452,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
       }
 
       // Steps 14.a-b, 14.d.i-ii.
-      str = ToString<CanGC>(cx, args[i]);
-      if (!str) {
+      if (!DynamicFunctionArgumentString(cx, args[i], &str)) {
         return false;
       }
 
@@ -1470,8 +1492,8 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   if (args.length() > 0) {
     // Steps 13, 14.e, 15.
     bodyArg = args[args.length() - 1];
-    bodyString = ToString<CanGC>(cx, bodyArg);
-    if (!bodyString || !sb.append(bodyString)) {
+    if (!DynamicFunctionArgumentString(cx, bodyArg, &bodyString) ||
+        !sb.append(bodyString)) {
       return false;
     }
   }

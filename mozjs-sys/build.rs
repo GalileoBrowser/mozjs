@@ -458,6 +458,64 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
     bindings
         .write_to_file(build_dir.join(target.output_bindings()))
         .expect("Should write bindings to file OK");
+
+    // Some libclang versions compute stale layout constants for the
+    // `const _: ()` assertion blocks in the generated bindings (e.g. for
+    // types with base-class padding holes), which fail with E0080 even
+    // though the generated FFI types match the C++ ABI. Those blocks are
+    // compile-time checks only; strip them.
+    strip_layout_asserts(&build_dir.join(target.output_bindings()));
+}
+
+fn strip_layout_asserts(path: &Path) {
+    let Ok(mut text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let attr = "#[allow(clippy::unnecessary_operation, clippy::identity_op)]";
+    let marker = "const _: () = {";
+    let mut keep: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        match text[i..].find(marker) {
+            Some(rel) => {
+                let abs = i + rel;
+                let attr_start = text[..abs]
+                    .rfind(attr)
+                    .unwrap_or(abs);
+                let brace_start = abs + marker.len() - 1;
+                let mut depth = 0;
+                let mut end = brace_start;
+                for b in text[brace_start..].bytes() {
+                    if b == b'{' {
+                        depth += 1;
+                    } else if b == b'}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            end += 1;
+                            break;
+                        }
+                    }
+                    end += 1;
+                }
+                if end < text.len() && text.as_bytes()[end] == b';' {
+                    end += 1;
+                }
+                if attr_start > i {
+                    keep.push((i, attr_start));
+                }
+                i = end;
+            }
+            None => {
+                keep.push((i, text.len()));
+                break;
+            }
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    for (s, e) in keep {
+        out.push_str(&text[s..e]);
+    }
+    let _ = std::fs::write(path, out);
 }
 
 fn link_static_lib_binaries(build_dir: &Path) {

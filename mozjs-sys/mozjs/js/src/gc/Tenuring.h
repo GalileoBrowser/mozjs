@@ -67,6 +67,15 @@ class TenuringTracer final : public JSTracer {
   // collection when out of memory to insert new entries.
   mozilla::Maybe<StringDeDupSet> stringDeDupSet;
 
+  // Optional scalar counter snapshots. No additional string references are
+  // retained across or within a collection.
+  uint64_t hashStartCalls = 0;
+  uint64_t hashStartLatin = 0;
+  uint64_t hashStartTwoByte = 0;
+  uint64_t hashStartUnits = 0;
+  uint64_t hashStartBytes = 0;
+  uint64_t hashStartWords = 0;
+
   bool tenureEverything;
 
   // A flag set when a GC thing is promoted to the next nursery generation (as

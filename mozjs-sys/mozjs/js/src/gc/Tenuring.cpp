@@ -10,6 +10,12 @@
 
 #include "gc/Tenuring.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 #include "gc/Cell.h"
 #include "gc/GCInternals.h"
 #include "gc/GCProbes.h"
@@ -36,6 +42,61 @@ using namespace js;
 using namespace js::gc;
 
 constexpr size_t MAX_DEDUPLICATABLE_STRING_LENGTH = 500;
+
+namespace {
+const bool PackedSurvivorHash = [] {
+  const char* value = std::getenv("GALILEO_PACKED_SURVIVOR_HASH");
+  return !value || value[0] != '0';
+}();
+const bool TraceSurvivorHash = [] {
+  const char* value = std::getenv("GALILEO_SURVIVOR_HASH_TRACE");
+  return value && value[0] == '1';
+}();
+struct SurvivorHashStats {
+  uint64_t calls = 0, latin = 0, twoByte = 0, units = 0, bytes = 0, words = 0;
+};
+thread_local SurvivorHashStats survivorHashStats;
+
+template <typename CharT>
+MOZ_ALWAYS_INLINE HashNumber HashSurvivorContents(const CharT* chars,
+                                                  size_t length) {
+  size_t bytes = length * sizeof(CharT);
+  if (TraceSurvivorHash) {
+    survivorHashStats.calls++;
+    survivorHashStats.latin += sizeof(CharT) == 1;
+    survivorHashStats.twoByte += sizeof(CharT) == 2;
+    survivorHashStats.units += length;
+    survivorHashStats.bytes += bytes;
+    survivorHashStats.words +=
+        PackedSurvivorHash ? (bytes + sizeof(size_t) - 1) / sizeof(size_t)
+                           : length;
+  }
+  if (!PackedSurvivorHash) {
+    return mozilla::HashString(chars, length);
+  }
+
+  // This hash belongs only to the collection-local content-dedup table.
+  // Equality still checks every character, length, flags, zone and alloc kind.
+  // Encoding is part of the flags, so equal keys have equal byte sequences.
+  // memcpy permits unaligned slices and never reads past the specified bytes.
+  const unsigned char* data = reinterpret_cast<const unsigned char*>(chars);
+  HashNumber hash = 0;
+  while (bytes >= sizeof(size_t)) {
+    size_t word;
+    std::memcpy(&word, data, sizeof(word));
+    hash = mozilla::AddToHash(hash, word);
+    data += sizeof(word);
+    bytes -= sizeof(word);
+  }
+  if (bytes) {
+    size_t tail = 0;
+    std::memcpy(&tail, data, bytes);
+    hash = mozilla::AddToHash(hash, tail);
+  }
+  // Distinguish zero-padded tails and different byte lengths.
+  return mozilla::AddToHash(hash, length);
+}
+}  // namespace
 
 #ifdef JS_GC_ZEAL
 class js::gc::PromotionStats {
@@ -88,9 +149,40 @@ TenuringTracer::TenuringTracer(JSRuntime* rt, Nursery* nursery,
       nursery_(*nursery),
       tenureEverything(tenureEverything) {
   stringDeDupSet.emplace();
+  if (TraceSurvivorHash) {
+    hashStartCalls = survivorHashStats.calls;
+    hashStartLatin = survivorHashStats.latin;
+    hashStartTwoByte = survivorHashStats.twoByte;
+    hashStartUnits = survivorHashStats.units;
+    hashStartBytes = survivorHashStats.bytes;
+    hashStartWords = survivorHashStats.words;
+  }
 }
 
-TenuringTracer::~TenuringTracer() = default;
+TenuringTracer::~TenuringTracer() {
+  if (!TraceSurvivorHash) {
+    return;
+  }
+  static std::atomic<uint32_t> records{0};
+  uint32_t record = records.fetch_add(1, std::memory_order_relaxed);
+  if (record < 65536) {
+    double stamp = std::chrono::duration<double, std::milli>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                       .count();
+    std::fprintf(
+        stderr,
+        "[galileo survivor hash] at_unix_ms=%.6f enabled=%u "
+        "calls=%llu latin=%llu twobyte=%llu units=%llu bytes=%llu "
+        "words=%llu record=%u\n",
+        stamp, unsigned(PackedSurvivorHash),
+        (unsigned long long)(survivorHashStats.calls - hashStartCalls),
+        (unsigned long long)(survivorHashStats.latin - hashStartLatin),
+        (unsigned long long)(survivorHashStats.twoByte - hashStartTwoByte),
+        (unsigned long long)(survivorHashStats.units - hashStartUnits),
+        (unsigned long long)(survivorHashStats.bytes - hashStartBytes),
+        (unsigned long long)(survivorHashStats.words - hashStartWords), record);
+  }
+}
 
 size_t TenuringTracer::getPromotedSize() const {
   return promotedSize + promotedCells * sizeof(NurseryCellHeader);
@@ -1390,12 +1482,12 @@ inline HashNumber DeduplicationStringHasher<Key>::hash(const Lookup& lookup) {
   // be unreachable.
 
   if (lookup->asLinear().hasLatin1Chars()) {
-    strHash = mozilla::HashString(lookup->asLinear().latin1Chars(nogc),
-                                  lookup->length());
+    strHash = HashSurvivorContents(lookup->asLinear().latin1Chars(nogc),
+                                   lookup->length());
   } else {
     MOZ_ASSERT(lookup->asLinear().hasTwoByteChars());
-    strHash = mozilla::HashString(lookup->asLinear().twoByteChars(nogc),
-                                  lookup->length());
+    strHash = HashSurvivorContents(lookup->asLinear().twoByteChars(nogc),
+                                   lookup->length());
   }
 
   return mozilla::HashGeneric(strHash, lookup->zone(), lookup->flags());

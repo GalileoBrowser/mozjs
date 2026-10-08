@@ -8160,6 +8160,9 @@ class MStoreDynamicSlot : public MBinaryInstruction,
 
   uint32_t slot() const { return slot_; }
   bool needsBarrier() const { return needsBarrier_; }
+  void setNeedsBarrier(bool needsBarrier = true) {
+    needsBarrier_ = needsBarrier;
+  }
   AliasSet getAliasSet() const override {
     return AliasSet::Store(AliasSet::DynamicSlot);
   }

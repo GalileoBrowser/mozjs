@@ -6,6 +6,11 @@
 
 #include "jit/BaselineCacheIRCompiler.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 #include "mozilla/RandomNum.h"
 
 #include "gc/GC.h"
@@ -3388,6 +3393,66 @@ void BaselineCacheIRCompiler::pushBoundFunctionArguments(
   }
 }
 
+// CallDOMFunction already guards the callee and receiver shape and verifies
+// the DOM interface before attaching. Keep its normal native exit frame so
+// argc, callee, this and all argument/return values remain visible to GC.
+// Unlike a generic native entry, the specialized method can use that proven
+// receiver without repeating the embedding's operation dispatch.
+static bool CallBaselineDOMMethod(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  JSFunction& callee = args.callee().as<JSFunction>();
+  MOZ_ASSERT(callee.hasJitInfo());
+  MOZ_ASSERT(cx->realm() == callee.realm());
+  const JSJitInfo* info = callee.jitInfo();
+  MOZ_ASSERT(info->type() == JSJitInfo::Method);
+  MOZ_ASSERT(args.thisv().isObject());
+
+  RootedObject obj(cx, &args.thisv().toObject());
+  // Window proxies and global receivers retain the embedding's generic
+  // security/outerization path. Only ordinary fixed-slot DOM reflectors use
+  // the same private slot convention as CallDOMGetter/CallDOMSetter.
+  if (!obj->is<NativeObject>() || obj->getClass()->isGlobal()) {
+    return callee.native()(cx, argc, vp);
+  }
+  MOZ_ASSERT(obj->getClass()->isDOMClass());
+  MOZ_ASSERT(obj->as<NativeObject>().numFixedSlots() > 0);
+#ifdef DEBUG
+  DOMInstanceClassHasProtoAtDepth instanceChecker =
+      cx->runtime()->DOMcallbacks->instanceClassMatchesProto;
+  MOZ_ASSERT(instanceChecker(obj->getClass(), info->protoID, info->depth));
+#endif
+  void* native = JS::GetReservedSlot(obj, 0).toPrivate();
+  bool success = info->method(cx, obj, native, JSJitMethodCallArgs(args));
+
+  static const bool trace = [] {
+    const char* value = std::getenv("GALILEO_BASELINE_DOM_METHOD_TRACE");
+    return value && value[0] == '1';
+  }();
+  if (trace) {
+    static std::atomic<uint64_t> records{0};
+    uint64_t record = records.fetch_add(1, std::memory_order_relaxed);
+    if (record < 131072) {
+      double stamp = std::chrono::duration<double, std::milli>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+      std::fprintf(stderr,
+                   "[galileo baseline dom method] at_unix_ms=%.3f proto=%u "
+                   "depth=%u argc=%u success=%u record=%llu\n",
+                   stamp, unsigned(info->protoID), unsigned(info->depth), argc,
+                   unsigned(success), static_cast<unsigned long long>(record));
+    }
+  }
+  return success;
+}
+
+static bool BaselineDOMMethodsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("GALILEO_BASELINE_DOM_METHODS");
+    return !value || value[0] != '0';
+  }();
+  return enabled;
+}
+
 bool BaselineCacheIRCompiler::emitCallNativeShared(
     NativeCallType callType, ObjOperandId calleeId, Int32OperandId argcId,
     CallFlags flags, uint32_t argcFixed, Maybe<bool> ignoresReturnValue,
@@ -3447,6 +3512,11 @@ bool BaselineCacheIRCompiler::emitCallNativeShared(
   masm.passABIArg(scratch2);
 
   switch (callType) {
+    case NativeCallType::DOMMethod: {
+      masm.callWithABI(DynamicFunction<JSNative>(CallBaselineDOMMethod),
+                       ABIType::General,
+                       CheckUnsafeCallWithABI::DontCheckHasExitFrame);
+    } break;
     case NativeCallType::Native: {
 #ifdef JS_SIMULATOR
       // The simulator requires VM calls to be redirected to a special
@@ -3563,7 +3633,10 @@ bool BaselineCacheIRCompiler::emitCallDOMFunction(ObjOperandId calleeId,
   JitSpew(JitSpew_Codegen, "%s", __FUNCTION__);
   Maybe<bool> ignoresReturnValue = mozilla::Some(false);
   Maybe<uint32_t> targetOffset;
-  return emitCallNativeShared(NativeCallType::Native, calleeId, argcId, flags,
+  NativeCallType callType = BaselineDOMMethodsEnabled()
+                                ? NativeCallType::DOMMethod
+                                : NativeCallType::Native;
+  return emitCallNativeShared(callType, calleeId, argcId, flags,
                               argcFixed, ignoresReturnValue, targetOffset);
 }
 
@@ -3574,7 +3647,10 @@ bool BaselineCacheIRCompiler::emitCallDOMFunctionWithAllocSite(
   loadAllocSiteIntoContext(siteOffset);
   Maybe<bool> ignoresReturnValue = mozilla::Some(false);
   Maybe<uint32_t> targetOffset;
-  return emitCallNativeShared(NativeCallType::Native, calleeId, argcId, flags,
+  NativeCallType callType = BaselineDOMMethodsEnabled()
+                                ? NativeCallType::DOMMethod
+                                : NativeCallType::Native;
+  return emitCallNativeShared(callType, calleeId, argcId, flags,
                               argcFixed, ignoresReturnValue, targetOffset,
                               ClearLocalAllocSite::Yes);
 }

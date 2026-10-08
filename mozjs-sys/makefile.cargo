@@ -42,7 +42,9 @@ ifneq (,$(CARGO_FEATURE_DEBUGMOZJS))
 endif
 
 ifneq (,$(CARGO_FEATURE_PROFILEMOZJS))
-	CONFIGURE_FLAGS += --enable-profiling
+	# ESR source disables JIT symbols by default. Profiling builds need the
+	# native jitdump emitter so perf can resolve generated Baseline/Ion code.
+	CONFIGURE_FLAGS += --enable-profiling --enable-jitdump
 endif
 
 ifneq (,$(CARGO_FEATURE_LIBZ_RS))

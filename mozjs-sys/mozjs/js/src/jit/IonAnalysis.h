@@ -97,6 +97,9 @@ void AssertExtendedGraphCoherency(MIRGraph& graph,
 
 [[nodiscard]] bool EliminateRedundantGCBarriers(MIRGraph& graph);
 
+[[nodiscard]] bool EliminatePrimitiveSlotPreBarriers(const MIRGenerator* mir,
+                                                     MIRGraph& graph);
+
 [[nodiscard]] bool AddKeepAliveInstructions(MIRGraph& graph);
 
 [[nodiscard]] bool MarkLoadsUsedAsPropertyKeys(MIRGraph& graph);

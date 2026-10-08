@@ -1556,6 +1556,16 @@ bool OptimizeMIR(MIRGenerator* mir) {
     }
   }
 
+  // Slot proofs refer to the final order, including fused load/type guards.
+  // Run after all instruction motion and before lowering preserves that order.
+  if (!mir->compilingWasm()) {
+    if (!EliminatePrimitiveSlotPreBarriers(mir, graph)) {
+      return false;
+    }
+    gs.spewPass("Primitive Slot Pre-Barrier Elimination");
+    AssertGraphCoherency(graph);
+  }
+
   if (!mir->compilingWasm()) {
     if (!AddKeepAliveInstructions(graph)) {
       return false;

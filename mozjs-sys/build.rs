@@ -340,6 +340,15 @@ fn build(build_dir: &Path, target: BuildTarget) {
         build.flag_if_supported(flag);
     }
 
+    if target == BuildTarget::JSGlue {
+        // This reviewed embedding translation unit includes actual private
+        // engine headers. Match libjs_static's Rust encoding configuration,
+        // using the same Cargo-provided dependency include directory rather
+        // than inventing declarations or searching a target tree.
+        build.define("MOZ_HAS_MOZGLUE", None);
+        build.include(env::var_os("DEP_ENCODING_C_MEM_INCLUDE_DIR").unwrap());
+    }
+
     if let Ok(android_api) = env::var("ANDROID_API_LEVEL").as_deref() {
         build.define("__ANDROID_MIN_SDK_VERSION__", android_api);
     }

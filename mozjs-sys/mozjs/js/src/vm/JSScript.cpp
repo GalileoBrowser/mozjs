@@ -1290,6 +1290,71 @@ ScriptSource::PinnedUnits<Unit>::PinnedUnits(
 template class ScriptSource::PinnedUnits<Utf8Unit>;
 template class ScriptSource::PinnedUnits<char16_t>;
 
+bool ScriptSource::utf16SourcePosition(JSContext* cx, uint32_t nativeOffset,
+                                     uint32_t* utf16Offset) {
+  MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
+  if (!hasSourceText() || nativeOffset > length()) {
+    return false;
+  }
+  if (hasSourceType<char16_t>()) {
+    *utf16Offset = nativeOffset;
+    return true;
+  }
+  MOZ_ASSERT(hasSourceType<Utf8Unit>());
+
+  uint32_t beginOffset = 0;
+  uint32_t count = 0;
+  auto checkpoint = std::upper_bound(
+      utf16SourceCheckpoints_.begin(), utf16SourceCheckpoints_.end(),
+      nativeOffset, [](uint32_t offset, const Utf16SourceCheckpoint& point) {
+        return offset < point.byteOffset;
+      });
+  if (checkpoint != utf16SourceCheckpoints_.begin()) {
+    --checkpoint;
+    beginOffset = checkpoint->byteOffset;
+    count = checkpoint->utf16Offset;
+  }
+  if (nativeOffset == beginOffset) {
+    *utf16Offset = count;
+    return true;
+  }
+
+  UncompressedSourceCache::AutoHoldEntry holder;
+  PinnedUnits<Utf8Unit> units(cx, this, holder, beginOffset,
+                            nativeOffset - beginOffset);
+  if (!units.get()) {
+    return false;
+  }
+  const Utf8Unit* cursor = units.get();
+  const Utf8Unit* end = cursor + (nativeOffset - beginOffset);
+  bool extendIndex = utf16SourceCheckpoints_.empty() ||
+                     nativeOffset > utf16SourceCheckpoints_.back().byteOffset;
+  if (extendIndex) {
+    static constexpr size_t CheckpointStride = 4096;
+    while (size_t(end - cursor) > CheckpointStride) {
+      const Utf8Unit* next = cursor + CheckpointStride;
+      // Parser positions are code-point boundaries. Keep sparse checkpoints
+      // on boundaries too, including a multibyte character across the stride.
+      while (mozilla::IsTrailingUnit(*next)) {
+        --next;
+      }
+      MOZ_ASSERT(next > cursor);
+      count += uint32_t(unicode::CountUTF16CodeUnits(cursor, next));
+      uint32_t byteOffset = beginOffset + uint32_t(next - units.get());
+      if (!utf16SourceCheckpoints_.append(
+              Utf16SourceCheckpoint{byteOffset, count})) {
+        ReportOutOfMemory(cx);
+        return false;
+      }
+      cursor = next;
+    }
+  }
+  count += uint32_t(unicode::CountUTF16CodeUnits(cursor, end));
+  MOZ_ASSERT(count <= nativeOffset);
+  *utf16Offset = count;
+  return true;
+}
+
 template <typename Unit>
 ScriptSource::PinnedUnitsIfUncompressed<Unit>::PinnedUnitsIfUncompressed(
     ScriptSource* source, size_t begin, size_t len)
@@ -1818,6 +1883,7 @@ bool js::SynchronouslyCompressSource(JSContext* cx,
 void ScriptSource::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                           JS::ScriptSourceInfo* info) const {
   info->misc += mallocSizeOf(this);
+  info->misc += utf16SourceCheckpoints_.sizeOfExcludingThis(mallocSizeOf);
   info->numScripts++;
 }
 

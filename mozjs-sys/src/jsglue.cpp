@@ -29,6 +29,7 @@
 #include "js/Proxy.h"
 #include "js/RegExp.h"
 #include "js/ScalarType.h"
+#include "js/String.h"
 #include "js/StructuredClone.h"
 #include "js/Wrapper.h"
 #include "js/experimental/CompileScript.h"
@@ -42,7 +43,10 @@
 #include "mozilla/Unused.h"
 
 #ifndef RUST_BINDGEN
+#  include "util/Text.h"
 #  include "vm/HelperThreads.h"
+#  include "vm/JSFunction.h"
+#  include "vm/JSScript.h"
 #endif
 
 typedef bool (*WantToMeasure)(JSObject* obj);
@@ -652,6 +656,91 @@ bool ShouldMeasureObject(JSObject* obj, nsISupports** iface) {
 }
 
 extern "C" {
+
+// An embedding result, not a mirror of any private engine object layout.
+// The caller keeps the function rooted and roots both strings before any GC.
+struct ScriptedFunctionSourceMetadata {
+  const char* filename;
+  JSString* function_name;
+  int64_t source_start;
+  JSString* source_url;
+};
+
+ScriptedFunctionSourceMetadata GetScriptedFunctionSourceMetadata(
+    JSContext* cx, JSFunction* function);
+
+#ifndef RUST_BINDGEN
+ScriptedFunctionSourceMetadata GetScriptedFunctionSourceMetadata(
+    JSContext* cx, JSFunction* function) {
+  ScriptedFunctionSourceMetadata metadata{nullptr, nullptr, -1, nullptr};
+  if (!cx || !function) {
+    return metadata;
+  }
+  JS::RootedFunction rooted_function(cx, function);
+  if (!rooted_function->hasBaseScript()) {
+    return metadata;
+  }
+  const js::BaseScript* script = rooted_function->baseScript();
+  if (!script) {
+    return metadata;
+  }
+  // Lazy and compiled functions already retain these native source fields.
+  // Reading them requires neither delazification nor author-property access.
+  metadata.filename = script->filename();
+  js::ScriptSource* source = script->scriptSource();
+  const uint32_t native_start = script->sourceStart();
+  const bool has_cached_position = script->hasCachedUtf16SourceStart();
+  const uint32_t cached_position =
+      has_cached_position ? script->cachedUtf16SourceStart() : 0;
+  // Use the compiler's actual source directive, not text parsed from a
+  // decorated eval filename. Root the new string across source recovery;
+  // the embedding roots both returned strings before another GC operation.
+  JS::RootedString source_url(cx);
+  JS::RootedString name(cx);
+  // Performance source identity comes from the compiler's shared function,
+  // not a runtime clone whose ordinary name may have been inferred from an
+  // evaluated computed property. Keep normal Function.name semantics intact.
+  JS::RootedFunction compiler_function(
+      cx, rooted_function->maybeCanonicalFunction());
+  if (!script->mutedErrors()) {
+    if (compiler_function) {
+      name = compiler_function->fullExplicitOrInferredName();
+    }
+  }
+  if (source->hasDisplayURL()) {
+    source_url = JS_NewUCStringCopyZ(cx, source->displayURL());
+    if (!source_url) {
+      return metadata;
+    }
+  }
+  if (!rooted_function->baseScript()->mutedErrors()) {
+    // Compiler-inferred names belong to the function; debugger guesses do not.
+    // Keep the atom rooted while a compressed source buffer may be recovered.
+    // SourceExtent uses the source buffer's native code units: UTF-8 bytes
+    // for UTF-8 input and UTF-16 units for two-byte input. The Web API requires
+    // UTF-16 units regardless of that internal representation. Normalize the
+    // actual stored text with the engine's shared encoding index; never
+    // parse Function.toString or apply a constant observed in a fixture.
+    if (has_cached_position) {
+      metadata.source_start = cached_position;
+    } else if (source->hasSourceText()) {
+      uint32_t position;
+      if (!source->utf16SourcePosition(cx, native_start, &position)) {
+        return metadata;
+      }
+      metadata.source_start = position;
+      // Source recovery may GC. Reacquire the current script through the
+      // rooted function instead of writing through the earlier raw pointer.
+      // Do not cache missing-source or allocation failures as a permanent -1.
+      rooted_function->baseScript()->setCachedUtf16SourceStart(
+          uint32_t(metadata.source_start));
+    }
+    metadata.function_name = name;
+  }
+  metadata.source_url = source_url;
+  return metadata;
+}
+#endif
 
 JSPrincipals* CreateRustJSPrincipals(const JSPrincipalsCallbacks& callbacks,
                                      void* privateData) {

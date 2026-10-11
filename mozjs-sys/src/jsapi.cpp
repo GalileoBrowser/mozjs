@@ -25,6 +25,7 @@
 #include "js/Modules.h"
 #include "js/Object.h"
 #include "js/Promise.h"
+#include "js/Prefs.h"
 #include "js/PropertySpec.h"
 #include "js/Proxy.h"
 #include "js/Realm.h"
@@ -54,7 +55,15 @@ namespace glue {
 
 // Reexport some functions that are marked inline.
 
-bool JS_Init() { return ::JS_Init(); }
+bool JS_Init() {
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  // Enable the engine's real disposal built-ins and parser before creating
+  // any page, worker or isolated extension realm. This is a language feature,
+  // not browser identity metadata or a site-specific compatibility response.
+  JS::Prefs::set_experimental_explicit_resource_management(true);
+#endif
+  return ::JS_Init();
+}
 
 JS::RealmOptions* JS_NewRealmOptions() {
   JS::RealmOptions* result = new JS::RealmOptions;

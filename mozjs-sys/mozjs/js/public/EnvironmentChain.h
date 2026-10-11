@@ -70,6 +70,8 @@ class MOZ_RAII JS_PUBLIC_API EnvironmentChain {
   // Opt in to an embedding-owned global object environment, not a `with`
   // object environment. Identifier calls have no implicit receiver; sloppy
   // functions instead obtain their global `this` from this one target object.
+  // Name lookup terminates here, including missing-name writes. Global
+  // declarations use the target's real own-property/extensibility operations.
   // This is native embedding policy, never a script-visible capability. Use a
   // dedicated target for this policy throughout its lexical environment life.
   [[nodiscard]] bool setGlobalObjectEnvironment() {

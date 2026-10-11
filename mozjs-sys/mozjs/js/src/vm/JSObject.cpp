@@ -1568,6 +1568,12 @@ bool js::LookupName(JSContext* cx, Handle<PropertyName*> name,
       objp.set(env);
       return true;
     }
+    // An embedding-owned global object is the terminal identifier scope.
+    // The enclosing engine global owns browser plumbing, not author bindings.
+    if (env->is<WithEnvironmentObject>() &&
+        env->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+      break;
+    }
   }
 
   objp.set(nullptr);
@@ -1638,7 +1644,9 @@ JSObject* js::LookupNameWithGlobalDefault(JSContext* cx,
     if (!LookupProperty(cx, env, id, &pobj, &prop)) {
       return nullptr;
     }
-    if (prop.isFound()) {
+    if (prop.isFound() ||
+        (env->is<WithEnvironmentObject>() &&
+         env->as<WithEnvironmentObject>().isGlobalObjectEnvironment())) {
       break;
     }
   }
@@ -1676,7 +1684,9 @@ JSObject* js::LookupNameUnqualified(JSContext* cx, Handle<PropertyName*> name,
     if (!LookupProperty(cx, env, id, &pobj, &prop)) {
       return nullptr;
     }
-    if (prop.isFound()) {
+    if (prop.isFound() ||
+        (env->is<WithEnvironmentObject>() &&
+         env->as<WithEnvironmentObject>().isGlobalObjectEnvironment())) {
       break;
     }
   }

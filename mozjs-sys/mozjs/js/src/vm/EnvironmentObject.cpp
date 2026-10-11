@@ -3781,7 +3781,7 @@ static void ReportCannotDeclareGlobalBinding(JSContext* cx,
 }
 
 [[nodiscard]] static bool CheckCanDeclareGlobalBinding(
-    JSContext* cx, Handle<GlobalObject*> global, Handle<PropertyName*> name,
+    JSContext* cx, HandleObject global, Handle<PropertyName*> name,
     bool isFunction) {
   RootedId id(cx, NameToId(name));
   Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
@@ -3796,7 +3796,11 @@ static void ReportCannotDeclareGlobalBinding(JSContext* cx,
   if (desc.isNothing()) {
     // 8.1.14.15 step 6.
     // 8.1.14.16 step 5.
-    if (global->isExtensible()) {
+    bool extensible;
+    if (!IsExtensible(cx, global, &extensible)) {
+      return false;
+    }
+    if (extensible) {
       return true;
     }
 
@@ -3844,6 +3848,22 @@ static bool InitGlobalOrEvalDeclarations(
 
     switch (bi.kind()) {
       case BindingKind::Var: {
+        if (varObj->is<WithEnvironmentObject>() &&
+            varObj->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+          RootedObject global(cx, &varObj->as<WithEnvironmentObject>().object());
+          RootedId id(cx, NameToId(name));
+          bool own;
+          if (!HasOwnProperty(cx, global, id, &own)) {
+            return false;
+          }
+          // CreateGlobalVarBinding preserves an existing own property's
+          // attributes, but an inherited property is not a declared binding.
+          if (!own && !DefineDataProperty(cx, global, id, UndefinedHandleValue,
+                                         attrs)) {
+            return false;
+          }
+          break;
+        }
         PropertyResult prop;
         RootedObject obj2(cx);
         if (!LookupProperty(cx, varObj, name, &obj2, &prop)) {
@@ -4004,9 +4024,15 @@ static bool InitHoistedFunctionDeclarations(JSContext* cx, HandleScript script,
     //
     // Check that global functions and vars may be declared.
     if (varObj->is<GlobalObject>()) {
-      Handle<GlobalObject*> global = varObj.as<GlobalObject>();
-      if (!CheckCanDeclareGlobalBinding(cx, global, name,
+      if (!CheckCanDeclareGlobalBinding(cx, varObj, name,
                                         bi.isTopLevelFunction())) {
+        return false;
+      }
+    } else if (varObj->is<WithEnvironmentObject>() &&
+               varObj->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+      RootedObject global(cx, &varObj->as<WithEnvironmentObject>().object());
+      if (!CheckCanDeclareGlobalBinding(cx, global, name,
+                                       bi.isTopLevelFunction())) {
         return false;
       }
     }

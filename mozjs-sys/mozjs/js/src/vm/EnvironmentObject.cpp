@@ -745,6 +745,7 @@ WithEnvironmentObject* WithEnvironmentObject::create(
   obj->initEnclosingEnvironment(enclosing);
   obj->initReservedSlot(OBJECT_SLOT, ObjectValue(*object));
   obj->initReservedSlot(THIS_SLOT, ObjectValue(*thisObj));
+  obj->initReservedSlot(IMPLICIT_THIS_SLOT, ObjectValue(*thisObj));
   if (scope) {
     MOZ_ASSERT(supportUnscopables == JS::SupportUnscopables::Yes,
                "with-statements must support Symbol.unscopables");
@@ -760,8 +761,13 @@ WithEnvironmentObject* WithEnvironmentObject::create(
 
 WithEnvironmentObject* WithEnvironmentObject::createNonSyntactic(
     JSContext* cx, HandleObject object, HandleObject enclosing,
-    JS::SupportUnscopables supportUnscopables) {
-  return create(cx, object, enclosing, nullptr, supportUnscopables);
+    JS::SupportUnscopables supportUnscopables, bool globalObjectEnvironment) {
+  auto* env = create(cx, object, enclosing, nullptr, supportUnscopables);
+  if (env && globalObjectEnvironment) {
+    MOZ_ASSERT(supportUnscopables == JS::SupportUnscopables::No);
+    env->setReservedSlot(IMPLICIT_THIS_SLOT, UndefinedValue());
+  }
+  return env;
 }
 
 static inline bool IsUnscopableDotName(JSContext* cx, HandleId id) {
@@ -983,8 +989,17 @@ NonSyntacticLexicalEnvironmentObject* js::CreateNonSyntacticEnvironmentChain(
   //
   // TODOshu: disallow the subscript loader from using non-distinguished
   // objects as dynamic scopes.
-  return ObjectRealm::get(env).getOrCreateNonSyntacticLexicalEnvironment(cx,
-                                                                         env);
+  auto* lexical = ObjectRealm::get(env).getOrCreateNonSyntacticLexicalEnvironment(
+      cx, env);
+  if (lexical &&
+      (lexical->enclosingEnvironment().is<WithEnvironmentObject>() &&
+       lexical->enclosingEnvironment()
+           .as<WithEnvironmentObject>()
+           .isGlobalObjectEnvironment()) != envChain.isGlobalObjectEnvironment()) {
+    JS_ReportErrorASCII(cx, "cannot change an object's environment binding policy");
+    return nullptr;
+  }
+  return lexical;
 }
 
 /*****************************************************************************/
@@ -3481,6 +3496,10 @@ WithEnvironmentObject* js::CreateObjectsForEnvironmentChain(
     JSContext* cx, const JS::EnvironmentChain& chain,
     HandleObject terminatingEnv) {
   MOZ_ASSERT(!chain.empty());
+  if (chain.isGlobalObjectEnvironment() && chain.length() != 1) {
+    JS_ReportErrorASCII(cx, "a global object environment requires one target");
+    return nullptr;
+  }
 
 #ifdef DEBUG
   for (size_t i = 0; i < chain.length(); ++i) {
@@ -3495,7 +3514,8 @@ WithEnvironmentObject* js::CreateObjectsForEnvironmentChain(
   RootedObject enclosingEnv(cx, terminatingEnv);
   for (size_t i = chain.length(); i > 0;) {
     withEnv = WithEnvironmentObject::createNonSyntactic(
-        cx, chain.chain()[--i], enclosingEnv, chain.supportUnscopables());
+        cx, chain.chain()[--i], enclosingEnv, chain.supportUnscopables(),
+        chain.isGlobalObjectEnvironment());
     if (!withEnv) {
       return nullptr;
     }

@@ -41,6 +41,7 @@ enum class SupportUnscopables : bool { No = false, Yes = true };
 class MOZ_RAII JS_PUBLIC_API EnvironmentChain {
   JS::RootedObjectVector chain_;
   SupportUnscopables supportUnscopables_;
+  bool globalObjectEnvironment_ = false;
 
  public:
   EnvironmentChain(JSContext* cx, SupportUnscopables supportUnscopables)
@@ -49,7 +50,12 @@ class MOZ_RAII JS_PUBLIC_API EnvironmentChain {
   EnvironmentChain(const EnvironmentChain&) = delete;
   void operator=(const EnvironmentChain&) = delete;
 
-  [[nodiscard]] bool append(JSObject* obj) { return chain_.append(obj); }
+  [[nodiscard]] bool append(JSObject* obj) {
+    if (globalObjectEnvironment_ && !chain_.empty()) {
+      return false;
+    }
+    return chain_.append(obj);
+  }
   bool empty() const { return chain_.empty(); }
   size_t length() const { return chain_.length(); }
 
@@ -60,6 +66,21 @@ class MOZ_RAII JS_PUBLIC_API EnvironmentChain {
     supportUnscopables_ = supportUnscopables;
   }
   SupportUnscopables supportUnscopables() const { return supportUnscopables_; }
+
+  // Opt in to an embedding-owned global object environment, not a `with`
+  // object environment. Identifier calls have no implicit receiver; sloppy
+  // functions instead obtain their global `this` from this one target object.
+  // This is native embedding policy, never a script-visible capability. Use a
+  // dedicated target for this policy throughout its lexical environment life.
+  [[nodiscard]] bool setGlobalObjectEnvironment() {
+    if (chain_.length() != 1) {
+      return false;
+    }
+    globalObjectEnvironment_ = true;
+    supportUnscopables_ = SupportUnscopables::No;
+    return true;
+  }
+  bool isGlobalObjectEnvironment() const { return globalObjectEnvironment_; }
 };
 
 }  // namespace JS

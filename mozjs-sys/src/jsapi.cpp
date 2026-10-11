@@ -351,6 +351,10 @@ bool AppendToEnvironmentChain(JS::EnvironmentChain* chain, JSObject* obj) {
   return chain->append(obj);
 }
 
+bool SetEnvironmentChainGlobalObject(JS::EnvironmentChain* chain) {
+  return chain->setGlobalObjectEnvironment();
+}
+
 }  // namespace glue
 
 // There's a couple of classes from pre-57 releases of SM that bindgen can't

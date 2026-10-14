@@ -257,6 +257,11 @@ void Realm::traceGlobalRoot(JSTracer* trc, const char* name) {
 }
 
 void ObjectRealm::trace(JSTracer* trc) {
+  if (nativeBuiltinData_) nativeBuiltinData_->trace(trc);
+  if (dynamicFunctionNameData_) dynamicFunctionNameData_->trace(trc);
+  if (errorStackData_) {
+    errorStackData_->trace(trc);
+  }
   if (objectMetadataTable) {
     objectMetadataTable->trace(trc);
   }
@@ -306,6 +311,11 @@ void Realm::traceRoots(JSTracer* trc,
 }
 
 void ObjectRealm::finishRoots() {
+  if (nativeBuiltinData_) nativeBuiltinData_->clear();
+  if (dynamicFunctionNameData_) dynamicFunctionNameData_->clear();
+  if (errorStackData_) {
+    errorStackData_->clear();
+  }
   if (objectMetadataTable) {
     objectMetadataTable->clear();
   }
@@ -542,6 +552,18 @@ void ObjectRealm::addSizeOfExcludingThis(
     size_t* nonSyntacticLexicalEnvironmentsArg) {
   *innerViewsArg += innerViews.sizeOfExcludingThis(mallocSizeOf);
 
+  // Engine-owned object-to-metadata weak tables.
+  if (nativeBuiltinData_) {
+    *objectMetadataTablesArg += nativeBuiltinData_->shallowSizeOfIncludingThis(mallocSizeOf);
+  }
+  if (dynamicFunctionNameData_) {
+    *objectMetadataTablesArg += dynamicFunctionNameData_->shallowSizeOfIncludingThis(mallocSizeOf);
+  }
+  if (errorStackData_) {
+    *objectMetadataTablesArg +=
+        errorStackData_->shallowSizeOfIncludingThis(mallocSizeOf);
+  }
+
   if (objectMetadataTable) {
     *objectMetadataTablesArg +=
         objectMetadataTable->shallowSizeOfIncludingThis(mallocSizeOf);
@@ -551,6 +573,64 @@ void ObjectRealm::addSizeOfExcludingThis(
     *nonSyntacticLexicalEnvironmentsArg +=
         map->shallowSizeOfIncludingThis(mallocSizeOf);
   }
+}
+
+JSObject* ObjectRealm::getNativeBuiltinData(JSObject* function) {
+  MOZ_ASSERT(&ObjectRealm::get(function) == this);
+  return nativeBuiltinData_ ? nativeBuiltinData_->get(function) : nullptr;
+}
+bool ObjectRealm::putNativeBuiltinData(JSContext* cx, HandleObject function, HandleObject data) {
+  MOZ_ASSERT(&ObjectRealm::get(function) == this);
+  cx->check(function, data);
+  if (!nativeBuiltinData_) {
+    nativeBuiltinData_ = cx->make_unique<ObjectWeakMap>(cx);
+    if (!nativeBuiltinData_) return false;
+  }
+  if (!nativeBuiltinData_->put(function, data)) {
+    ReportOutOfMemory(cx);
+    return false;
+  }
+  return true;
+}
+
+JSObject* ObjectRealm::getErrorStackData(JSObject* receiver) {
+  MOZ_ASSERT(&ObjectRealm::get(receiver) == this);
+  return errorStackData_ ? errorStackData_->get(receiver) : nullptr;
+}
+
+JSObject* ObjectRealm::getDynamicFunctionNameData(JSObject* function) {
+  MOZ_ASSERT(&ObjectRealm::get(function) == this);
+  return dynamicFunctionNameData_ ? dynamicFunctionNameData_->get(function) : nullptr;
+}
+bool ObjectRealm::putDynamicFunctionNameData(JSContext* cx, HandleObject function, HandleObject data) {
+  MOZ_ASSERT(&ObjectRealm::get(function) == this);
+  cx->check(function, data);
+  if (!dynamicFunctionNameData_) {
+    dynamicFunctionNameData_ = cx->make_unique<ObjectWeakMap>(cx);
+    if (!dynamicFunctionNameData_) return false;
+  }
+  if (!dynamicFunctionNameData_->put(function, data)) {
+    ReportOutOfMemory(cx);
+    return false;
+  }
+  return true;
+}
+
+bool ObjectRealm::putErrorStackData(JSContext* cx, HandleObject receiver,
+                                  HandleObject data) {
+  MOZ_ASSERT(&ObjectRealm::get(receiver) == this);
+  cx->check(receiver, data);
+  if (!errorStackData_) {
+    errorStackData_ = cx->make_unique<ObjectWeakMap>(cx);
+    if (!errorStackData_) {
+      return false;
+    }
+  }
+  if (!errorStackData_->put(receiver, data)) {
+    ReportOutOfMemory(cx);
+    return false;
+  }
+  return true;
 }
 
 void Realm::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,

@@ -21,8 +21,11 @@ enum class SavedFrameSelfHosted;
 }
 
 namespace js {
+bool CanAccessNativeErrorStackFrame(JSContext* cx, JSPrincipals* principals,
+                                  Handle<SavedFrame*> frame);
 
 class FrameIter;
+class NativeStackFrameData;
 
 // # Saved Stacks
 //
@@ -155,6 +158,7 @@ class FrameIter;
 
 class SavedStacks {
   friend class SavedFrame;
+  friend class NativeStackFrameData;
   friend bool JS::ubi::ConstructSavedFrameStackSlow(
       JSContext* cx, JS::ubi::StackFrame& ubiFrame,
       MutableHandleObject outSavedFrameStack);

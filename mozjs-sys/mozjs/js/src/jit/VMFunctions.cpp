@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/VMFunctions.h"
+#include "vm/NativeInvocation.h"
 
 #include "mozilla/FloatingPoint.h"
 
@@ -1556,6 +1557,8 @@ bool CallNativeGetter(JSContext* cx, HandleFunction callee,
   vp[0].setObject(*callee.get());
   vp[1].set(receiver);
 
+  AutoNativeInvocation invocation(cx, CallArgsFromVp(0, vp.begin()),
+                                  NativeInvocationPath::Getter);
   if (!natfun(cx, 0, vp.begin())) {
     return false;
   }
@@ -1595,6 +1598,8 @@ bool CallNativeSetter(JSContext* cx, HandleFunction callee, HandleObject obj,
   vp[1].setObject(*obj.get());
   vp[2].set(rhs);
 
+  AutoNativeInvocation invocation(cx, CallArgsFromVp(1, vp.begin()),
+                                  NativeInvocationPath::Setter);
   return natfun(cx, 1, vp.begin());
 }
 

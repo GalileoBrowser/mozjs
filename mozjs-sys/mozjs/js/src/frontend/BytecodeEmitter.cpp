@@ -7943,6 +7943,17 @@ bool BytecodeEmitter::emitSelfHostedSetIsInlinableLargeFunction(
   return emit1(JSOp::Undefined);
 }
 
+bool BytecodeEmitter::emitSelfHostedSetIsStackTransparent(CallNode* callNode) {
+#ifdef DEBUG
+  ListNode* argsList = callNode->args();
+  MOZ_ASSERT(argsList->count() == 1);
+  assertSelfHostedExpectedTopLevel(argsList->head());
+#endif
+  MOZ_ASSERT(prevSelfHostedTopLevelFunction->isInitialCompilation);
+  prevSelfHostedTopLevelFunction->setIsStackTransparent();
+  return emit1(JSOp::Undefined);
+}
+
 bool BytecodeEmitter::emitSelfHostedSetCanonicalName(CallNode* callNode) {
   ListNode* argsList = callNode->args();
 
@@ -8574,6 +8585,9 @@ bool BytecodeEmitter::emitCallOrNew(CallNode* callNode, ValueUsage valueUsage) {
     }
     if (calleeName == TaggedParserAtomIndex::WellKnown::SetCanonicalName()) {
       return emitSelfHostedSetCanonicalName(callNode);
+    }
+    if (calleeName == TaggedParserAtomIndex::WellKnown::SetIsStackTransparent()) {
+      return emitSelfHostedSetIsStackTransparent(callNode);
     }
     if (calleeName == TaggedParserAtomIndex::WellKnown::IsNullOrUndefined()) {
       return emitSelfHostedIsNullOrUndefined(callNode);

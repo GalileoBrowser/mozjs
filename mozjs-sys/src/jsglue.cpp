@@ -47,6 +47,10 @@
 #  include "vm/HelperThreads.h"
 #  include "vm/JSFunction.h"
 #  include "vm/JSScript.h"
+#  include "vm/NativeErrorStack.h"
+#  include "vm/NativeInvocation.h"
+#  include "js/CallAndConstruct.h"
+#  include "js/GCAPI.h"
 #endif
 
 typedef bool (*WantToMeasure)(JSObject* obj);
@@ -656,6 +660,78 @@ bool ShouldMeasureObject(JSObject* obj, nsISupports** iface) {
 }
 
 extern "C" {
+
+// Explicitly installed by a native unit test only, never browser startup.
+bool InstallNativeInvocationTestFunctions(JSContext* cx, JSObject* global);
+void ConfigureNativeInvocationTestTier(JSContext* cx, uint32_t tier);
+
+#ifndef RUST_BINDGEN
+static bool ReadNativeInvocationForTest(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (argc < 2 || !args[0].isObject()) return false;
+  JS::RootedObject expected(cx, &args[0].toObject());
+  JS::RootedValue receiver(cx, args[1]);
+  if (argc > 2 && args[2].isBoolean() && args[2].toBoolean()) {
+    JS_GC(cx, JS::GCReason::API);
+  }
+  args.rval().setInt32(js::ProbeNativeInvocationState(cx, expected, receiver));
+  return true;
+}
+
+static bool NativeResultBeforeCallbackForTest(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedValue callback(cx, args.get(0));
+  JS::RootedValue receiver(cx, args.thisv());
+  if (!callback.isObject() && receiver.isObject()) {
+    JS::RootedObject object(cx, &receiver.toObject());
+    if (!JS_GetProperty(cx, object, "callback", &callback)) return false;
+  }
+  // Native ABI permits writing the result before invoking user code. The
+  // regression must observe the saved callee, not this overwritten Value.
+  args.rval().set(receiver);
+  JS::RootedValue ignored(cx);
+  return JS::Call(cx, receiver, callback, JS::HandleValueArray::empty(), &ignored);
+}
+
+bool InstallNativeInvocationTestFunctions(JSContext* cx, JSObject* global) {
+  if (!cx || !global) return false;
+  JS::RootedObject object(cx, global);
+  return JS_DefineFunction(cx, object, "readNativeInvocationForTest", ReadNativeInvocationForTest, 3, 0) &&
+         JS_DefineFunction(cx, object, "nativeResultBeforeCallbackForTest", NativeResultBeforeCallbackForTest, 1, 0);
+}
+
+void ConfigureNativeInvocationTestTier(JSContext* cx, uint32_t tier) {
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_ION_ENABLE, tier >= 2);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE, tier >= 1);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE, tier >= 1);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_WARMUP_TRIGGER, 10);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_ION_NORMAL_WARMUP_TRIGGER, 100);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_OFFTHREAD_COMPILATION_ENABLE, 0);
+}
+#endif
+
+// Embedding-only regression access; no function is installed in page realms.
+// The caller roots both the error and output Value across the native operation.
+bool ReadNativeErrorCapturedFrameValue(JSContext* cx, JSObject* error,
+                                       uint32_t index, uint32_t field,
+                                       JS::Value* output);
+
+#ifndef RUST_BINDGEN
+bool ReadNativeErrorCapturedFrameValue(JSContext* cx, JSObject* error,
+                                       uint32_t index, uint32_t field,
+                                       JS::Value* output) {
+  if (!cx || !error || !output) {
+    return false;
+  }
+  JS::RootedObject receiver(cx, error);
+  JS::RootedValue result(cx);
+  if (!js::ReadNativeErrorStackFrameValue(cx, receiver, index, field, &result)) {
+    return false;
+  }
+  *output = result;
+  return true;
+}
+#endif
 
 // An embedding result, not a mirror of any private engine object layout.
 // The caller keeps the function rooted and roots both strings before any GC.

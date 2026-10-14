@@ -81,7 +81,8 @@ class ErrorObject : public NativeObject {
                              UniquePtr<JSErrorReport> report,
                              HandleString message,
                              Handle<mozilla::Maybe<JS::Value>> cause,
-                             HandleObject proto = nullptr);
+                             HandleObject proto = nullptr,
+                             bool stackEnabled = true);
 
   /*
    * Assign the initial error shape to the empty object.  (This shape does

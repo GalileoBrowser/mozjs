@@ -544,6 +544,7 @@
   MACRO_(SetConstructorInit, "SetConstructorInit")                             \
   MACRO_(setFloat16, "setFloat16")                                             \
   MACRO_(SetIsInlinableLargeFunction, "SetIsInlinableLargeFunction")           \
+  MACRO_(SetIsStackTransparent, "SetIsStackTransparent")                     \
   MACRO_(SetIteratorNext, "SetIteratorNext")                                   \
   MACRO_(Set_Iterator_, "Set Iterator")                                        \
   MACRO_(setFromBase64, "setFromBase64")                                       \
@@ -559,6 +560,8 @@
   MACRO_(source, "source")                                                     \
   MACRO_(SpeciesConstructor, "SpeciesConstructor")                             \
   MACRO_(stack, "stack")                                                       \
+  MACRO_(stackTraceLimit, "stackTraceLimit")                                   \
+  MACRO_(prepareStackTrace, "prepareStackTrace")                               \
   MACRO_(star_namespace_star_, "*namespace*")                                  \
   MACRO_(start, "start")                                                       \
   MACRO_(startRange, "startRange")                                             \

@@ -9,6 +9,8 @@
  */
 
 #include "vm/JSFunction-inl.h"
+#include "vm/NativeFunctionDebugName.h"
+#include "vm/NativeBuiltinMetadata.h"
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Maybe.h"
@@ -1593,6 +1595,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   }
 
   // Step 38.
+  if (!RegisterNativeDynamicFunctionName(cx, fun)) return false;
   args.rval().setObject(*fun);
   return true;
 }
@@ -1842,6 +1845,13 @@ JSFunction* js::NewFunctionWithProto(
     fun->initNative(native, nullptr);
   }
   fun->initAtom(atom);
+
+  if (native && cx->nativeBuiltinDefinitionDepth) {
+    RootedFunction rooted(cx, fun);
+    bool propertyAccessor = flags.kind() == FunctionFlags::Getter || flags.kind() == FunctionFlags::Setter;
+    if (!RegisterNativeBuiltinFunction(cx, rooted, propertyAccessor)) return nullptr;
+    fun = rooted;
+  }
 
 #ifdef DEBUG
   fun->assertFunctionKindIntegrity();
@@ -2131,6 +2141,8 @@ JSFunction* js::DefineFunction(
   if (!DefineDataProperty(cx, obj, id, funVal, flags & ~JSFUN_FLAGS_MASK)) {
     return nullptr;
   }
+
+  if (!RegisterNativeBuiltinFunction(cx, fun, true)) return nullptr;
 
   return fun;
 }

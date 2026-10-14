@@ -9,6 +9,7 @@
  */
 
 #include "vm/JSObject-inl.h"
+#include "vm/NativeBuiltinMetadata.h"
 
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Try.h"
@@ -2292,13 +2293,14 @@ static bool DefineFunctionFromSpec(JSContext* cx, HandleObject obj,
     return true;
   }
 
-  JSFunction* fun = NewFunctionFromSpec(cx, fs, id);
+  RootedFunction fun(cx, NewFunctionFromSpec(cx, fs, id));
   if (!fun) {
     return false;
   }
 
   RootedValue funVal(cx, ObjectValue(*fun));
-  return DefineDataProperty(cx, obj, id, funVal, fs->flags & ~JSFUN_FLAGS_MASK);
+  if (!DefineDataProperty(cx, obj, id, funVal, fs->flags & ~JSFUN_FLAGS_MASK)) return false;
+  return RegisterNativeBuiltinFunction(cx, fun, true);
 }
 
 bool js::DefineFunctions(JSContext* cx, HandleObject obj,

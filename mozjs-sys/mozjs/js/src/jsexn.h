@@ -13,6 +13,8 @@
 
 #include "mozilla/Assertions.h"
 
+#include "mozilla/Maybe.h"
+
 #include "jspubtd.h"
 #include "jstypes.h"
 #include "NamespaceImports.h"
@@ -40,7 +42,13 @@ UniquePtr<JSErrorReport> CopyErrorReport(JSContext* cx, JSErrorReport* report);
 // errors).
 static const size_t MAX_REPORTED_STACK_DEPTH = 1u << 7;
 
-bool CaptureStack(JSContext* cx, MutableHandleObject stack);
+// Undefined/non-numeric limits can disable the script-visible stack entirely.
+// The default parameter preserves the independent engine diagnostic capture.
+mozilla::Maybe<uint32_t> GetStackTraceLimit(JSContext* cx);
+
+bool CaptureStack(JSContext* cx, MutableHandleObject stack,
+                  uint32_t limit = MAX_REPORTED_STACK_DEPTH,
+                  const JS::Value* skipNativeInvocation = nullptr);
 
 JSString* ComputeStackString(JSContext* cx);
 

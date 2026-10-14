@@ -15,6 +15,7 @@
 #include "js/CallArgs.h"
 #include "js/experimental/JitInfo.h"
 #include "vm/TypedArrayObject.h"
+#include "vm/NativeInvocation.h"
 
 #include "jit/MacroAssembler-inl.h"
 #include "vm/Activation-inl.h"
@@ -282,6 +283,8 @@ bool jit::CallTrampolineNativeJitCode(JSContext* cx, TrampolineNative native,
 
   EnterJitCode enter = cx->runtime()->jitRuntime()->enterJit();
   void* code = *cx->runtime()->jitRuntime()->trampolineNativeJitEntry(native);
+
+  AutoNativeTrampolineInvocation nativeInvocation(cx, args, &activation);
 
   CALL_GENERATED_CODE(enter, code, maxArgc, maxArgv, /* osrFrame = */ nullptr,
                       calleeToken, /* envChain = */ nullptr,

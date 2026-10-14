@@ -9,6 +9,7 @@
  */
 
 #include "vm/Interpreter-inl.h"
+#include "vm/NativeInvocation.h"
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/FloatingPoint.h"
@@ -499,6 +500,7 @@ MOZ_ALWAYS_INLINE bool CallJSNative(JSContext* cx, Native native,
   MOZ_ASSERT(!args.callee().is<ProxyObject>());
 
   AutoRealm ar(cx, &args.callee());
+  AutoNativeInvocation invocation(cx, args);
   bool ok = native(cx, args.length(), args.base());
   if (ok) {
     cx->check(args.rval());

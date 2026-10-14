@@ -184,6 +184,15 @@ class JS_PUBLIC_API RealmCreationOptions {
     return *this;
   }
 
+  // Error frame collection is owned by each realm. Embedders selecting V8
+  // compatibility must not change another realm's default, cap or pure-read
+  // policy merely because the realms share a JS runtime.
+  bool v8ErrorStackLimits() const { return v8ErrorStackLimits_; }
+  RealmCreationOptions& setV8ErrorStackLimits(bool flag) {
+    v8ErrorStackLimits_ = flag;
+    return *this;
+  }
+
   // This flag doesn't affect JS engine behavior.  It is used by Gecko to
   // mark whether content windows and workers are "Secure Context"s. See
   // https://w3c.github.io/webappsec-secure-contexts/
@@ -244,6 +253,7 @@ class JS_PUBLIC_API RealmCreationOptions {
   bool defineSharedArrayBufferConstructor_ = true;
   bool coopAndCoep_ = false;
   bool toSource_ = false;
+  bool v8ErrorStackLimits_ = false;
 
   bool secureContext_ = false;
   bool freezeBuiltins_ = false;

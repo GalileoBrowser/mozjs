@@ -54,6 +54,9 @@ function Reflect_apply(target, thisArgument, argumentsList) {
 }
 // This function is only barely too long for normal inlining.
 SetIsInlinableLargeFunction(Reflect_apply);
+// This implementation forwards to the target; it is not an additional public
+// call boundary. Preserve that role regardless of aliases or JIT inlining.
+SetIsStackTransparent(Reflect_apply);
 
 // ES2017 draft rev a785b0832b071f505a694e1946182adeab84c972
 // 26.1.2 Reflect.construct ( target, argumentsList [ , newTarget ] )

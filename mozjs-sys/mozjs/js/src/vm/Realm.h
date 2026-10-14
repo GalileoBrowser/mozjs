@@ -241,6 +241,18 @@ class ObjectRealm {
   // need to use the same lexical environment to persist lexical bindings.
   js::UniquePtr<js::ObjectWeakMap> nonSyntacticLexicalEnvironments_;
 
+  // Engine-private error records. An ephemeron keeps a record alive only while
+  // its receiver is live; no authored property/symbol exposes the backing data.
+  js::UniquePtr<js::ObjectWeakMap> errorStackData_;
+  // Compiler-origin/name-property provenance for actual dynamic functions.
+  js::UniquePtr<js::ObjectWeakMap> dynamicFunctionNameData_;
+  js::UniquePtr<js::ObjectWeakMap> nativeBuiltinData_;
+
+ public:
+  JSObject* getNativeBuiltinData(JSObject* function);
+  bool putNativeBuiltinData(JSContext* cx, JS::HandleObject function, JS::HandleObject data);
+
+ private:
   ObjectRealm(const ObjectRealm&) = delete;
   void operator=(const ObjectRealm&) = delete;
 
@@ -264,6 +276,11 @@ class ObjectRealm {
   void finishRoots();
   void trace(JSTracer* trc);
   void sweepAfterMinorGC(JSTracer* trc);
+
+  JSObject* getErrorStackData(JSObject* receiver);
+  bool putErrorStackData(JSContext* cx, HandleObject receiver, HandleObject data);
+  JSObject* getDynamicFunctionNameData(JSObject* function);
+  bool putDynamicFunctionNameData(JSContext* cx, HandleObject function, HandleObject data);
 
   void addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf,
                               size_t* innerViewsArg,

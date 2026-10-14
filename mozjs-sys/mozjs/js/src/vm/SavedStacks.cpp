@@ -31,6 +31,9 @@
 #include "util/StringBuilder.h"
 #include "vm/Compartment.h"
 #include "vm/FrameIter.h"
+#include "vm/NativeStackFrameData.h"
+#include "vm/NativeInvocation.h"
+#include "vm/NativeBuiltinMetadata.h"
 #include "vm/GeckoProfiler.h"
 #include "vm/JSScript.h"
 #include "vm/Realm.h"
@@ -178,7 +181,8 @@ struct MOZ_STACK_CLASS SavedFrame::Lookup {
          JSAtom* asyncCause, SavedFrame* parent, JSPrincipals* principals,
          bool mutedErrors,
          const Maybe<LiveSavedFrameCache::FramePtr>& framePtr = Nothing(),
-         jsbytecode* pc = nullptr, Activation* activation = nullptr)
+         jsbytecode* pc = nullptr, Activation* activation = nullptr,
+         JSObject* nativeStackFrameData = nullptr)
       : source(source),
         sourceId(sourceId),
         line(line),
@@ -188,6 +192,7 @@ struct MOZ_STACK_CLASS SavedFrame::Lookup {
         parent(parent),
         principals(principals),
         mutedErrors(mutedErrors),
+        nativeStackFrameData(nativeStackFrameData),
         framePtr(framePtr),
         pc(pc),
         activation(activation) {
@@ -208,6 +213,7 @@ struct MOZ_STACK_CLASS SavedFrame::Lookup {
         parent(savedFrame.getParent()),
         principals(savedFrame.getPrincipals()),
         mutedErrors(savedFrame.getMutedErrors()),
+        nativeStackFrameData(savedFrame.getNativeStackFrameData()),
         framePtr(Nothing()),
         pc(nullptr),
         activation(nullptr) {
@@ -228,6 +234,7 @@ struct MOZ_STACK_CLASS SavedFrame::Lookup {
   SavedFrame* parent;
   JSPrincipals* principals;
   bool mutedErrors;
+  JSObject* nativeStackFrameData;
 
   // These are used only by the LiveSavedFrameCache and not used for identity or
   // hashing.
@@ -241,6 +248,8 @@ struct MOZ_STACK_CLASS SavedFrame::Lookup {
                       "SavedFrame::Lookup::functionDisplayName");
     TraceNullableRoot(trc, &asyncCause, "SavedFrame::Lookup::asyncCause");
     TraceNullableRoot(trc, &parent, "SavedFrame::Lookup::parent");
+    TraceNullableRoot(trc, &nativeStackFrameData,
+                      "SavedFrame::Lookup::nativeStackFrameData");
   }
 };
 
@@ -263,6 +272,7 @@ class WrappedPtrOperations<SavedFrame::Lookup, Wrapper> {
   SavedFrame* parent() { return value().parent; }
   JSPrincipals* principals() { return value().principals; }
   bool mutedErrors() { return value().mutedErrors; }
+  JSObject* nativeStackFrameData() { return value().nativeStackFrameData; }
   Maybe<LiveSavedFrameCache::FramePtr> framePtr() { return value().framePtr; }
   jsbytecode* pc() { return value().pc; }
   Activation* activation() { return value().activation; }
@@ -275,6 +285,9 @@ class MutableWrappedPtrOperations<SavedFrame::Lookup, Wrapper>
 
  public:
   void setParent(SavedFrame* parent) { value().parent = parent; }
+  void setNativeStackFrameData(JSObject* data) {
+    value().nativeStackFrameData = data;
+  }
 
   void setAsyncCause(Handle<JSAtom*> asyncCause) {
     value().asyncCause = asyncCause;
@@ -288,7 +301,13 @@ bool SavedFrame::HashPolicy::maybeGetHash(const Lookup& l,
   if (!SavedFramePtrHasher::maybeGetHash(l.parent, &parentHash)) {
     return false;
   }
-  *hashOut = calculateHash(l, parentHash);
+  HashNumber nativeDataHash = 0;
+  if (l.nativeStackFrameData &&
+      !NativeFrameDataHasher::maybeGetHash(l.nativeStackFrameData,
+                                           &nativeDataHash)) {
+    return false;
+  }
+  *hashOut = calculateHash(l, parentHash, nativeDataHash);
   return true;
 }
 
@@ -298,31 +317,45 @@ bool SavedFrame::HashPolicy::ensureHash(const Lookup& l, HashNumber* hashOut) {
   if (!SavedFramePtrHasher::ensureHash(l.parent, &parentHash)) {
     return false;
   }
-  *hashOut = calculateHash(l, parentHash);
+  HashNumber nativeDataHash = 0;
+  if (l.nativeStackFrameData &&
+      !NativeFrameDataHasher::ensureHash(l.nativeStackFrameData,
+                                        &nativeDataHash)) {
+    return false;
+  }
+  *hashOut = calculateHash(l, parentHash, nativeDataHash);
   return true;
 }
 
 /* static */
 HashNumber SavedFrame::HashPolicy::hash(const Lookup& lookup) {
-  return calculateHash(lookup, SavedFramePtrHasher::hash(lookup.parent));
+  return calculateHash(lookup, SavedFramePtrHasher::hash(lookup.parent),
+                        lookup.nativeStackFrameData
+                            ? NativeFrameDataHasher::hash(lookup.nativeStackFrameData)
+                            : 0);
 }
 
 /* static */
 HashNumber SavedFrame::HashPolicy::calculateHash(const Lookup& lookup,
-                                                 HashNumber parentHash) {
+                                                 HashNumber parentHash,
+                                                 HashNumber nativeDataHash) {
   JS::AutoCheckCannotGC nogc;
   // Assume that we can take line mod 2^32 without losing anything of
   // interest.  If that assumption changes, we'll just need to start with 0
   // and add another overload of AddToHash with more arguments.
   return AddToHash(lookup.line, lookup.column.rawValue(), lookup.source,
                    lookup.functionDisplayName, lookup.asyncCause,
-                   lookup.mutedErrors, parentHash,
+                   lookup.mutedErrors, parentHash, nativeDataHash,
                    JSPrincipalsPtrHasher::hash(lookup.principals));
 }
 
 /* static */
 bool SavedFrame::HashPolicy::match(SavedFrame* existing, const Lookup& lookup) {
   MOZ_ASSERT(existing);
+
+  if (existing->getNativeStackFrameData() != lookup.nativeStackFrameData) {
+    return false;
+  }
 
   if (existing->getLine() != lookup.line) {
     return false;
@@ -576,6 +609,8 @@ void SavedFrame::initFromLookup(JSContext* cx, Handle<Lookup> lookup) {
   initAsyncCause(lookup.asyncCause());
   initParent(lookup.parent());
   initPrincipalsAndMutedErrors(lookup.principals(), lookup.mutedErrors());
+  initReservedSlot(JSSLOT_NATIVE_STACK_FRAME_DATA,
+                   ObjectOrNullValue(lookup.nativeStackFrameData()));
 }
 
 /* static */
@@ -643,6 +678,30 @@ static bool SavedFrameSubsumedByPrincipals(JSContext* cx,
   }
 
   return subsumes(principals, framePrincipals);
+}
+
+bool CanAccessNativeErrorStackFrame(JSContext* cx, JSPrincipals* principals,
+                                       Handle<SavedFrame*> frame) {
+  if (!SavedFrameSubsumedByPrincipals(cx, principals, frame)) {
+    return false;
+  }
+  RootedObject nativeRecord(cx, frame->getNativeStackFrameData());
+  if (nativeRecord && (nativeRecord = CheckedUnwrapStatic(nativeRecord)) &&
+      nativeRecord->is<NativeStackFrameData>() &&
+      nativeRecord->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::StackTransparent)) {
+    return false;
+  }
+  if (!frame->isSelfHosted(cx)) {
+    return true;
+  }
+  // Expose only a real publicly registered builtin's captured invocation.
+  // Keep private self-hosted helpers and their implementation locations hidden.
+  RootedObject record(cx, frame->getNativeStackFrameData());
+  if (!record || !(record = CheckedUnwrapStatic(record))) {
+    return false;
+  }
+  return record->is<NativeStackFrameData>() &&
+         record->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::PublicBuiltin);
 }
 
 // Return the first SavedFrame in the chain that starts with |frame| whose
@@ -1473,8 +1532,53 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
                                       ? &startAtObj->as<JSFunction>()
                                       : nullptr);
   bool seenStartAt = !startAt;
+  bool framePushed = false;
+
+  const bool captureNative = cx->nativeBuiltinStackCapture;
+  Rooted<NativeInvocationSnapshots> nativeInvocations(cx, NativeInvocationSnapshots());
+  if (captureNative && !CaptureNativeInvocationSnapshots(cx, &nativeInvocations)) return false;
+  bool nativeCaptureSatisfied = false;
+  auto pushNativeForCaller = [&](Activation* activation, void* physical, unsigned inlineNo) {
+    for (auto& invocation : nativeInvocations.get()) {
+      if (invocation.consumed || invocation.caller.activation != activation ||
+          invocation.caller.physicalFrame != physical || invocation.caller.inlineFrameNo != inlineNo) continue;
+      invocation.consumed = true;
+      RootedObject function(cx, invocation.callee);
+      // Cutoff uses actual invocation identity, including hidden machinery.
+      if (!seenStartAt) {
+        if (function == startAt) seenStartAt = true;
+        continue;
+      }
+      if (invocation.arguments && invocation.arguments == cx->nativeStackCaptureSkipInvocation) continue;
+      uint32_t role = NativeBuiltinFunctionRole(function);
+      if (!(role & PublicNativeBuiltin) || (role & TransparentNativeForwarder)) continue;
+      auto* nativePrincipals = function->as<JSFunction>().realm()->principals();
+      auto subsumes = cx->runtime()->securityCallbacks->subsumes;
+      if (subsumes && !subsumes(cx->realm()->principals(), nativePrincipals)) continue;
+      RootedObject nativeData(cx);
+      if (!NativeStackFrameData::captureNative(cx, invocation, &nativeData)) return false;
+      Rooted<JSAtom*> displayName(cx, function->as<JSFunction>().maybePartialDisplayAtom());
+      if (!stackChain.emplaceBack(cx->names().empty_, 0, 0,
+            JS::TaggedColumnNumberOneOrigin(JS::LimitedColumnNumberOneOrigin(1)),
+            displayName, nullptr, nullptr, nativePrincipals, false, Nothing(), nullptr,
+            nullptr, nativeData)) return false;
+      if (captureIsSatisfied(cx, nativePrincipals, cx->names().empty_, capture)) {
+        nativeCaptureSatisfied = true;
+        break;
+      }
+      if (capture.is<JS::MaxFrames>()) --capture.as<JS::MaxFrames>().maxFrames;
+    }
+    return true;
+  };
 
   while (!iter.done()) {
+    if (captureNative && !pushNativeForCaller(iter.activation(), iter.rawFramePtr(),
+                                              iter.logicalInlineFrameNo())) return false;
+    if (nativeCaptureSatisfied) break;
+    // MaxFrames counts visible boundaries in native-compatible realms. Keep
+    // raw engine records for debugger/cache use, without spending the limit
+    // on a compiler-marked forwarding implementation.
+    framePushed = false;
     Activation& activation = *iter.activation();
     Maybe<LiveSavedFrameCache::FramePtr> framePtr =
         LiveSavedFrameCache::FramePtr::create(iter);
@@ -1553,18 +1657,31 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
     // If we haven't yet seen the start, then don't add anything to the stack
     // chain.
     if (seenStartAt) {
+      RootedObject nativeFrameData(cx);
+      if (cx->realm()->creationOptions().v8ErrorStackLimits() &&
+          !NativeStackFrameData::capture(cx, iter, &nativeFrameData)) {
+        return false;
+      }
+      framePushed = !nativeFrameData ||
+          !nativeFrameData->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::StackTransparent);
+      if (captureNative && nativeFrameData &&
+          nativeFrameData->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::SelfHosted) &&
+          !nativeFrameData->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::PublicBuiltin)) {
+        framePushed = false;
+      }
       if (!stackChain.emplaceBack(location.source(), location.sourceId(),
                                   location.line(), location.column(),
                                   displayAtom,
                                   nullptr,  // asyncCause
                                   nullptr,  // parent (not known yet)
                                   principals, iter.mutedErrors(), framePtr,
-                                  iter.pc(), &activation)) {
+                                  iter.pc(), &activation, nativeFrameData)) {
         return false;
       }
     }
 
-    if (captureIsSatisfied(cx, principals, location.source(), capture)) {
+    if (framePushed &&
+        captureIsSatisfied(cx, principals, location.source(), capture)) {
       break;
     }
 
@@ -1655,10 +1772,13 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
       seenCached = false;
     }
 
-    if (capture.is<JS::MaxFrames>()) {
+    if (framePushed && capture.is<JS::MaxFrames>()) {
       capture.as<JS::MaxFrames>().maxFrames--;
     }
   }
+
+  if (captureNative && iter.done() && !nativeCaptureSatisfied &&
+      !pushNativeForCaller(nullptr, nullptr, 0)) return false;
 
   // Iterate through |stackChain| in reverse order and get or create the
   // actual SavedFrame instances.
@@ -1838,14 +1958,22 @@ bool SavedStacks::checkForEvalInFramePrev(
 
 SavedFrame* SavedStacks::getOrCreateSavedFrame(
     JSContext* cx, Handle<SavedFrame::Lookup> lookup) {
-  const SavedFrame::Lookup& lookupInstance = lookup.get();
+  // Async stacks may be adopted into another realm. Preserve the identity of
+  // their live records through the normal checked compartment wrapper cache.
+  Rooted<SavedFrame::Lookup> localLookup(cx, lookup.get());
+  RootedObject nativeData(cx, localLookup.nativeStackFrameData());
+  if (!cx->compartment()->wrap(cx, &nativeData)) {
+    return nullptr;
+  }
+  localLookup.setNativeStackFrameData(nativeData);
+  const SavedFrame::Lookup& lookupInstance = localLookup.get();
   DependentAddPtr<SavedFrame::Set> p(cx, frames, lookupInstance);
   if (p) {
     MOZ_ASSERT(*p);
     return *p;
   }
 
-  Rooted<SavedFrame*> frame(cx, createFrameFromLookup(cx, lookup));
+  Rooted<SavedFrame*> frame(cx, createFrameFromLookup(cx, localLookup));
   if (!frame) {
     return nullptr;
   }

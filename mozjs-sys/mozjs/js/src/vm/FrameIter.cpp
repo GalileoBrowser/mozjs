@@ -465,6 +465,13 @@ FrameIter& FrameIter::operator++() {
   return *this;
 }
 
+unsigned FrameIter::logicalInlineFrameNo() const {
+  MOZ_ASSERT(!done());
+  return isJSJit() && jsJitFrame().isIonScripted()
+             ? ionInlineFrames_.frameNo()
+             : 0;
+}
+
 FrameIter::Data* FrameIter::copyData() const {
   Data* data = data_.cx_->new_<Data>(data_);
   if (!data) {

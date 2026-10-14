@@ -45,6 +45,8 @@ namespace js {
 
 class AutoAllocInAtomsZone;
 class AutoMaybeLeaveAtomsZone;
+class AutoNativeInvocation;
+class AutoNativeTrampolineInvocation;
 class AutoRealm;
 struct PortableBaselineStack;
 
@@ -429,6 +431,17 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   //   MOZ_DIAGNOSTIC_ASSERT(!cx->brittleMode, "specific failure");
   //
   bool brittleMode = false;
+
+  // Restored across reentrant formatter reads, including cross-realm callbacks.
+  bool nativeErrorStackFormatting = false;
+
+  // Synchronous, non-owning links into rooted C++ invocation scopes. Each
+  // scope restores this thread-local context link before its roots are freed.
+  js::AutoNativeInvocation* nativeInvocationTop = nullptr;
+  js::AutoNativeTrampolineInvocation* nativeTrampolineInvocationTop = nullptr;
+  uint32_t nativeBuiltinDefinitionDepth = 0;
+  bool nativeBuiltinStackCapture = false;
+  const JS::Value* nativeStackCaptureSkipInvocation = nullptr;
 
   /*
    * Stack of debuggers that currently disallow debuggee execution.

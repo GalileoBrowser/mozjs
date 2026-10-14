@@ -186,6 +186,11 @@
 //     Mark the large function `fun` inlineable.
 //     `fun` must be the last function declaration before this call.
 //
+//   SetIsStackTransparent(fun)
+//     Mark an engine-owned forwarding implementation as a non-public stack
+//     boundary. It must follow the actual target function declaration, and
+//     cannot be called by content. It does not change calls, names or inlining.
+//
 //   SetCanonicalName(fun)
 //     Set canonical name for the function `fun`.
 //     `fun` must be the last function declaration before this call, and also

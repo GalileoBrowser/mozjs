@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "vm/GlobalObject.h"
+#include "vm/NativeBuiltinMetadata.h"
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -14,6 +15,7 @@
 #endif
 #include "builtin/AtomicsObject.h"
 #include "builtin/BigInt.h"
+#include "builtin/SelfHostingDefines.h"
 #include "builtin/DataViewObject.h"
 #ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
 #  include "builtin/DisposableStackObject.h"
@@ -290,6 +292,10 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
   // all scripts to execute, even in debuggee compartments that are paused.
   AutoSuppressDebuggeeNoExecuteChecks suppressNX(cx);
 
+  // Standard-engine constructor/prototype definition cannot call authored
+  // code. Host/embedding function factories do not enter this scope.
+  AutoNativeBuiltinDefinition nativeDefinitions(cx);
+
   // Some classes can be disabled at compile time, others at run time;
   // if a feature is compile-time disabled, clasp is null.
   const JSClass* clasp = ProtoKeyToClass(key);
@@ -369,6 +375,15 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
   RootedObject ctor(cx, clasp->specCreateConstructorHook()(cx, key));
   if (!ctor) {
     return false;
+  }
+
+  if (ctor->is<JSFunction>()) {
+    RootedFunction function(cx, &ctor->as<JSFunction>());
+    if (!RegisterNativeBuiltinFunction(cx, function, true)) return false;
+  }
+  if (proto && proto->is<JSFunction>()) {
+    RootedFunction function(cx, &proto->as<JSFunction>());
+    if (!RegisterNativeBuiltinFunction(cx, function, true)) return false;
   }
 
   RootedId id(cx, NameToId(ClassName(key, cx)));
@@ -878,6 +893,8 @@ bool GlobalObject::getSelfHostedFunction(JSContext* cx,
                                          MutableHandleValue funVal) {
   if (global->maybeGetIntrinsicValue(selfHostedName, funVal.address(), cx)) {
     RootedFunction fun(cx, &funVal.toObject().as<JSFunction>());
+    MOZ_ASSERT(fun->isSelfHostedBuiltin() && fun->isExtended());
+    fun->setExtendedSlot(PUBLIC_SELF_HOSTED_FUNCTION_SLOT, BooleanValue(true));
     if (fun->fullExplicitName() == name) {
       return true;
     }
@@ -918,6 +935,8 @@ bool GlobalObject::getSelfHostedFunction(JSContext* cx,
     return false;
   }
   MOZ_ASSERT(fun->nargs() == nargs);
+  MOZ_ASSERT(fun->isSelfHostedBuiltin() && fun->isExtended());
+  fun->setExtendedSlot(PUBLIC_SELF_HOSTED_FUNCTION_SLOT, BooleanValue(true));
   funVal.setObject(*fun);
 
   return GlobalObject::addIntrinsicValue(cx, global, selfHostedName, funVal);
@@ -1040,6 +1059,9 @@ void GlobalObjectData::trace(JSTracer* trc, GlobalObject* global) {
   TraceNullableEdge(trc, &throwTypeError, "global-throw-type-error");
   TraceNullableEdge(trc, &eval, "global-eval");
   TraceNullableEdge(trc, &emptyIterator, "global-empty-iterator");
+  TraceNullableEdge(trc, &nativeErrorStackGetter, "global-error-stack-getter");
+  TraceNullableEdge(trc, &nativeErrorStackSetter, "global-error-stack-setter");
+  TraceNullableEdge(trc, &nativeCallSitePrototype, "global-callsite-prototype");
 
   TraceNullableEdge(trc, &arrayShapeWithDefaultProto, "global-array-shape");
 

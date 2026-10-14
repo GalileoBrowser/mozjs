@@ -451,10 +451,20 @@ class NativeExitFrameLayout {
   uint32_t hiCalleeResult_;
 
  public:
-  static inline size_t Size() { return sizeof(NativeExitFrameLayout); }
+  // These two GC-traced Values live BELOW the existing footer. Keeping the
+  // original exit/argc/vp layout intact is essential for the generic Ion
+  // trampoline's return path and for native ABI argument pointers.
+  static constexpr size_t InvocationSnapshotSize = 2 * sizeof(JS::Value);
+  static inline size_t Size() {
+    return InvocationSnapshotSize + sizeof(NativeExitFrameLayout);
+  }
+
+  inline JS::Value* invocationSnapshot() {
+    return reinterpret_cast<JS::Value*>(&footer_) - 2;
+  }
 
   static size_t offsetOfResult() {
-    return offsetof(NativeExitFrameLayout, loCalleeResult_);
+    return InvocationSnapshotSize + offsetof(NativeExitFrameLayout, loCalleeResult_);
   }
   inline JS::Value* vp() {
     return reinterpret_cast<JS::Value*>(&loCalleeResult_);
@@ -500,14 +510,20 @@ class IonOOLNativeExitFrameLayout {
  public:
   static ExitFrameType Type() { return ExitFrameType::IonOOLNative; }
 
+  static constexpr size_t InvocationSnapshotSize = 2 * sizeof(JS::Value);
+  inline JS::Value* invocationSnapshot() {
+    return reinterpret_cast<JS::Value*>(&footer_) - 2;
+  }
+
   static inline size_t Size(size_t argc) {
     // The frame accounts for the callee/result and |this|, so we only need
     // args.
-    return sizeof(IonOOLNativeExitFrameLayout) + (argc * sizeof(JS::Value));
+    return InvocationSnapshotSize + sizeof(IonOOLNativeExitFrameLayout) +
+           (argc * sizeof(JS::Value));
   }
 
   static size_t offsetOfResult() {
-    return offsetof(IonOOLNativeExitFrameLayout, loCalleeResult_);
+    return InvocationSnapshotSize + offsetof(IonOOLNativeExitFrameLayout, loCalleeResult_);
   }
 
   inline JitCode** stubCode() { return &stubCode_; }

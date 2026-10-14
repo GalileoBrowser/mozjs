@@ -3504,6 +3504,11 @@ bool BaselineCacheIRCompiler::emitCallNativeShared(
   masm.loadJSContext(scratch);
   masm.enterFakeExitFrameForNative(scratch, scratch, isConstructing);
 
+  // Root the original invocation independently of the mutable callee/result
+  // slot. This does not change vp, the selected target, or argc.
+  masm.pushValue(Address(scratch2, sizeof(Value)));
+  masm.pushValue(Address(scratch2, 0));
+
   // Execute call.
   masm.setupUnalignedABICall(scratch);
   masm.loadJSContext(scratch);

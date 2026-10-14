@@ -23,6 +23,8 @@
 #include "vm/GetterSetter.h"        // js::GetterSetter
 #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
 #include "vm/JSONPrinter.h"         // js::JSONPrinter
+#include "vm/JSFunction.h"
+#include "vm/NativeFunctionDebugName.h"
 #include "vm/PlainObject.h"         // js::PlainObject
 #include "vm/TypedArrayObject.h"
 #include "vm/Watchtower.h"
@@ -1637,6 +1639,9 @@ bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
     if (!AddOrChangeProperty<IsAddOrChange::Add>(cx, obj, id, desc)) {
       return false;
     }
+    if (!desc.resolving() && obj->is<JSFunction>() && id.isAtom(cx->names().name)) {
+      NoteNativeFunctionNameMutation(obj);
+    }
     return result.succeed();
   }
 
@@ -1651,6 +1656,14 @@ bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
     return false;
   }
   if (redundant) {
+    // A configurable intrinsic name explicitly replaced with a data value
+    // acquires authored provenance even for a same-value string. Empty and
+    // unchanged attribute-only descriptors are genuine no-ops. A fixed
+    // readonly name's allowed same-value definition is likewise a no-op.
+    if (desc.hasValue() && attrs.configurable() && !desc.resolving() &&
+        obj->is<JSFunction>() && id.isAtom(cx->names().name)) {
+      NoteNativeFunctionNameMutation(obj);
+    }
     return result.succeed();
   }
 
@@ -1788,6 +1801,9 @@ bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
 
   if (!AddOrChangeProperty<IsAddOrChange::Change>(cx, obj, id, desc, &prop)) {
     return false;
+  }
+  if (!desc.resolving() && obj->is<JSFunction>() && id.isAtom(cx->names().name)) {
+    NoteNativeFunctionNameMutation(obj);
   }
 
   // Step 7.
@@ -2764,7 +2780,7 @@ static bool CallJSDeletePropertyOp(JSContext* cx, JSDeletePropertyOp op,
  *
  * ES2025 draft rev ac21460fedf4b926520b06c9820bdbebad596a8b
  */
-bool js::NativeDeleteProperty(JSContext* cx, Handle<NativeObject*> obj,
+static bool NativeDeletePropertyImpl(JSContext* cx, Handle<NativeObject*> obj,
                               HandleId id, ObjectOpResult& result) {
   // Step 1.
   PropertyResult prop;
@@ -2808,6 +2824,15 @@ bool js::NativeDeleteProperty(JSContext* cx, Handle<NativeObject*> obj,
   }
 
   return SuppressDeletedProperty(cx, obj, id);
+}
+
+bool js::NativeDeleteProperty(JSContext* cx, Handle<NativeObject*> obj,
+                             HandleId id, ObjectOpResult& result) {
+  bool ok = NativeDeletePropertyImpl(cx, obj, id, result);
+  if (ok && result.ok() && obj->is<JSFunction>() && id.isAtom(cx->names().name)) {
+    NoteNativeFunctionNameMutation(obj);
+  }
+  return ok;
 }
 
 bool js::CopyDataPropertiesNative(JSContext* cx, Handle<PlainObject*> target,

@@ -681,6 +681,13 @@ class FunctionBox : public SuspendableContext {
     }
   }
 
+  void setIsStackTransparent() {
+    immutableFlags_.setFlag(ImmutableFlags::IsStackTransparent, true);
+    if (isScriptExtraFieldCopiedToStencil) {
+      copyUpdatedImmutableFlags();
+    }
+  }
+
   uint16_t length() const { return length_; }
   void setLength(uint16_t length) { length_ = length; }
 

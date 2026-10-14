@@ -17,6 +17,7 @@
 #include "vm/GlobalObject.h"
 #include "vm/JSObject.h"
 #include "vm/PlainObject.h"  // js::PlainObject
+#include "vm/NativePromiseStack.h"
 
 #include "debugger/DebugAPI-inl.h"
 #include "vm/Stack-inl.h"
@@ -50,6 +51,10 @@ AbstractGeneratorObject* AbstractGeneratorObject::create(
   }
 
   genObj->setStackStorage(*stack);
+
+  if (!RecordNativePromiseGeneratorInvocation(cx, genObj)) {
+    return nullptr;
+  }
 
   // Note: This assumes that a Warp frame cannot be the target of
   //       the debugger, as we do not call OnNewGenerator.

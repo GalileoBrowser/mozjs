@@ -22,6 +22,7 @@
 #include "vm/Compartment.h"
 #include "vm/NativeStackFrameData.h"
 #include "vm/NativeFunctionDebugName.h"
+#include "vm/NativeBuiltinMetadata.h"
 #include "vm/NativeStackTraceDiagnostic.h"
 #include "vm/PlainObject.h"
 #include "vm/SavedFrame.h"
@@ -43,7 +44,8 @@ const JSClass NativeCallSite::class_ = {
     "CallSite", JSCLASS_HAS_RESERVED_SLOTS(NativeCallSite::SlotCount)};
 enum class Method {
   This, Function, FunctionName, TypeName, MethodName, FileName, ScriptName,
-  Line, Column, EvalOrigin, Toplevel, Eval, Native, Constructor, Async, String
+  Line, Column, EvalOrigin, Toplevel, Eval, Native, Constructor, Async,
+  PromiseAll, PromiseIndex, String
 };
 
 // Native pure reads never invoke authored name getters or proxy traps.
@@ -250,6 +252,8 @@ bool Read(JSContext* cx, Handle<NativeCallSite*> site, Method method,
   RootedObject record(cx, frame->getNativeStackFrameData()), function(cx), source(cx);
   RootedValue receiver(cx, UndefinedValue());
   RootedValue scriptName(cx, UndefinedValue()), sourceURL(cx, UndefinedValue());
+  RootedValue promiseIndex(cx, NullValue());
+  NativePromiseCombinatorKind promiseKind = NativePromiseCombinatorKind::None;
   bool hasRecord = false;
   uint32_t flags = 0;
   if (record && (record = CheckedUnwrapStatic(record))) {
@@ -262,12 +266,16 @@ bool Read(JSContext* cx, Handle<NativeCallSite*> site, Method method,
     flags = data.getReservedSlot(NativeStackFrameData::Flags).toInt32();
     scriptName = data.getReservedSlot(NativeStackFrameData::ScriptName);
     sourceURL = data.getReservedSlot(NativeStackFrameData::SourceURL);
+    if (flags & NativeStackFrameData::PromiseCombinator) {
+      promiseKind = NativePromiseCombinatorKind(data.getReservedSlot(NativeStackFrameData::PromiseKind).toInt32());
+      promiseIndex = data.getReservedSlot(NativeStackFrameData::PromiseIndex);
+    }
   }
   if (!cx->compartment()->wrap(cx, &function) || !cx->compartment()->wrap(cx, &source) ||
       (!receiver.isMagic() && !cx->compartment()->wrap(cx, &receiver)) ||
       !cx->compartment()->wrap(cx, &scriptName) ||
       !cx->compartment()->wrap(cx, &sourceURL)) return false;
-  bool async = frame->getAsyncCause() != nullptr;
+  bool async = frame->getAsyncCause() != nullptr || (flags & NativeStackFrameData::Async);
   // Async describes where the frame was captured, not a strict-mode or
   // principals privacy boundary. Keep the existing checked access and the
   // younger-strict-frame boundary without hiding real sloppy async identities.
@@ -334,6 +342,9 @@ bool Read(JSContext* cx, Handle<NativeCallSite*> site, Method method,
           (!receiver.isMagic() && IsGlobalReceiver(receiver))); return true;
     case Method::Eval: out.setBoolean(eval); return true;
     case Method::Native:
+      if (flags & NativeStackFrameData::PromiseCombinator) {
+        out.setBoolean(source != nullptr); return true;
+      }
       if (flags & NativeStackFrameData::CppBuiltin) {
         // No native-script source is attached to an ordinary C++ builtin.
         out.setBoolean(source != nullptr);
@@ -347,6 +358,11 @@ bool Read(JSContext* cx, Handle<NativeCallSite*> site, Method method,
       return true;
     case Method::Constructor: out.setBoolean(constructing); return true;
     case Method::Async: out.setBoolean(async); return true;
+    case Method::PromiseAll:
+      out.setBoolean(async && promiseKind == NativePromiseCombinatorKind::All); return true;
+    case Method::PromiseIndex:
+      if (async && (flags & NativeStackFrameData::PromiseCombinator)) out.set(promiseIndex);
+      return true;
     case Method::String: break;
   }
   RootedValue name(cx), file(cx), line(cx), column(cx), type(cx), methodName(cx),
@@ -363,6 +379,16 @@ bool Read(JSContext* cx, Handle<NativeCallSite*> site, Method method,
   bool methodCall = !constructing && !topLevel.toBoolean();
   bool label = constructing || methodCall || named;
   if (async && !builder.append("async ")) return false;
+  if (async && (flags & NativeStackFrameData::PromiseCombinator)) {
+    // Formatting consumes the real retained factory/index record, not a
+    // guessed function name or an invented Promise boundary.
+    if (!builder.append("Promise.") ||
+        !(named ? builder.append(name.toString()) : builder.append("<anonymous>")) ||
+        !builder.append(" (index ") || !AppendNumber(cx, builder, uint32_t(promiseIndex.toNumber())) ||
+        !builder.append(')')) return false;
+    out.setString(builder.finishString());
+    return out.isString();
+  }
   if (constructing && !builder.append("new ")) return false;
   if (methodCall && type.isString() &&
       (!builder.append(type.toString()) || !builder.append('.'))) return false;
@@ -438,6 +464,8 @@ CALLSITE_METHOD(isEval, Eval)
 CALLSITE_METHOD(isNative, Native)
 CALLSITE_METHOD(isConstructor, Constructor)
 CALLSITE_METHOD(isAsync, Async)
+CALLSITE_METHOD(isPromiseAll, PromiseAll)
+CALLSITE_METHOD(getPromiseIndex, PromiseIndex)
 CALLSITE_METHOD(toString, String)
 #undef CALLSITE_METHOD
 const JSFunctionSpec methods[] = {
@@ -456,6 +484,8 @@ const JSFunctionSpec methods[] = {
     JS_FN("isNative", isNative, 0, JSPROP_READONLY | JSPROP_PERMANENT),
     JS_FN("isConstructor", isConstructor, 0, JSPROP_READONLY | JSPROP_PERMANENT),
     JS_FN("isAsync", isAsync, 0, JSPROP_READONLY | JSPROP_PERMANENT),
+    JS_FN("isPromiseAll", isPromiseAll, 0, JSPROP_READONLY | JSPROP_PERMANENT),
+    JS_FN("getPromiseIndex", getPromiseIndex, 0, JSPROP_READONLY | JSPROP_PERMANENT),
     JS_FN("toString", toString, 0, JSPROP_READONLY | JSPROP_PERMANENT), JS_FS_END};
 }
 
@@ -475,16 +505,20 @@ bool js::BuildNativeCallSites(JSContext* cx, HandleObject stack, MutableHandleOb
   if (top) for (Handle<SavedFrame*> frame : SavedFrame::RootedRange(cx, top)) {
     if (!CanAccessNativeErrorStackFrame(cx, cx->realm()->principals(), frame)) continue;
     RootedObject record(cx, frame->getNativeStackFrameData());
+    bool promiseCombinator = false;
     if (record && (record = CheckedUnwrapStatic(record))) {
       JSAutoRealm ar(cx, record);
       hideObjects |= record->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::Strict);
+      promiseCombinator = record->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::PromiseCombinator);
     }
     RootedObject wrappedFrame(cx, frame);
     if (!cx->compartment()->wrap(cx, &wrappedFrame)) return false;
     Rooted<NativeCallSite*> site(cx, NewObjectWithGivenProto<NativeCallSite>(cx, prototype));
     if (!site) return false;
     site->initReservedSlot(NativeCallSite::Frame, ObjectValue(*wrappedFrame));
-    site->initReservedSlot(NativeCallSite::HideObjects, BooleanValue(hideObjects));
+    // Combinator logical frames retain native constructor/function identity;
+    // unlike generator frames their own flags do not inherit strictness.
+    site->initReservedSlot(NativeCallSite::HideObjects, BooleanValue(hideObjects && !promiseCombinator));
     if (!values.append(ObjectValue(*site))) return false;
   }
   out.set(NewDenseCopiedArray(cx, values.length(), values.begin()));

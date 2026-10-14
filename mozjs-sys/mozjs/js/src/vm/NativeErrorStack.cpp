@@ -23,6 +23,8 @@
 #include "vm/JSScript.h"
 #include "vm/NativeStackFrameData.h"
 #include "vm/NativeInvocation.h"
+#include "vm/NativePromiseStack.h"
+#include "vm/GeneratorObject.h"
 #include "vm/NativeCallSite.h"
 #include "vm/NativeStackTraceDiagnostic.h"
 #include "vm/SavedFrame.h"
@@ -205,6 +207,81 @@ bool NativeStackFrameData::captureNative(JSContext* cx, const NativeInvocationSn
   record->initReservedSlot(Flags, Int32Value(flags));
   record->initReservedSlot(ScriptName, NullValue());
   record->initReservedSlot(SourceURL, NullValue());
+  result.set(record);
+  return true;
+}
+
+bool js::RecordNativePromiseGeneratorInvocation(JSContext* cx, HandleObject object) {
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits()) return true;
+  MOZ_ASSERT(object->is<AbstractGeneratorObject>());
+  RootedFunction expectedFunction(cx, &object->as<AbstractGeneratorObject>().callee());
+  FrameIter iter(cx);
+  if (iter.done() || !iter.isFunctionFrame() || !iter.matchCallee(cx, expectedFunction)) return true;
+  RootedObject invocation(cx);
+  if (!NativeStackFrameData::capture(cx, iter, &invocation)) return false;
+  // This private ephemeron retains the actual function invocation's receiver,
+  // including an initialized boxed this. It does not create a generator-layout
+  // slot or infer a receiver from names/globals after suspension.
+  return ObjectRealm::get(object).putNativeBuiltinData(cx, object, invocation);
+}
+
+bool NativeStackFrameData::capturePromise(JSContext* cx,
+    const NativePromiseStackSnapshot& snapshot, MutableHandleObject result) {
+  SavedStacks::AutoReentrancyGuard guard(cx->realm()->savedStacks());
+  RootedObject function(cx, snapshot.combinator), source(cx);
+  RootedValue receiver(cx, snapshot.constructor ? ObjectValue(*snapshot.constructor) : UndefinedValue());
+  RootedValue scriptName(cx, NullValue()), sourceURL(cx, NullValue());
+  uint32_t flags = HasFunction | Async;
+  if (snapshot.generator) {
+    Rooted<AbstractGeneratorObject*> generator(cx, &snapshot.generator->as<AbstractGeneratorObject>());
+    RootedScript script(cx);
+    {
+      AutoRealm ar(cx, generator);
+      MOZ_ASSERT(generator->isSuspended());
+      function = &generator->callee();
+      script = generator->callee().nonLazyScript();
+      source = script->sourceObject();
+      if (script->strict()) flags |= Strict;
+      if (script->isStackTransparent()) flags |= StackTransparent;
+      ScriptSource* scriptSource = script->scriptSource();
+      if (script->isForEval() || isEvalSource(scriptSource)) flags |= Eval;
+      if (script->isModule()) flags |= Module;
+      if (!(flags & Eval) && scriptSource->filename()) {
+        const char* name = scriptSource->filename();
+        RootedString value(cx, JS_NewStringCopyUTF8Z(cx, JS::ConstUTF8CharsZ(name, std::strlen(name))));
+        if (!value) return false;
+        scriptName.setString(value);
+      }
+      if (scriptSource->hasDisplayURL()) {
+        RootedString value(cx, JS_NewUCStringCopyZ(cx, scriptSource->displayURL()));
+        if (!value) return false;
+        sourceURL.setString(value);
+      }
+      RootedObject invocation(cx, ObjectRealm::get(generator).getNativeBuiltinData(generator));
+      if (invocation && invocation->is<NativeStackFrameData>()) {
+        receiver = invocation->as<NativeStackFrameData>().getReservedSlot(Receiver);
+      } else if (!GetThisValueForDebuggerSuspendedGeneratorMaybeOptimizedOut(cx, *generator, script, &receiver)) {
+        return false;
+      }
+    }
+  } else {
+    MOZ_ASSERT(snapshot.kind != NativePromiseCombinatorKind::None);
+    flags |= PromiseCombinator | PublicBuiltin;
+  }
+  if (receiver.isMagic()) flags |= ReceiverUnavailable;
+  if (!cx->compartment()->wrap(cx, &function) || !cx->compartment()->wrap(cx, &source) ||
+      (!receiver.isMagic() && !cx->compartment()->wrap(cx, &receiver)) ||
+      !cx->compartment()->wrap(cx, &scriptName) || !cx->compartment()->wrap(cx, &sourceURL)) return false;
+  Rooted<NativeStackFrameData*> record(cx, NewObjectWithGivenProto<NativeStackFrameData>(cx, nullptr));
+  if (!record) return false;
+  record->initReservedSlot(Function, ObjectOrNullValue(function));
+  record->initReservedSlot(Receiver, receiver);
+  record->initReservedSlot(SourceObject, ObjectOrNullValue(source));
+  record->initReservedSlot(Flags, Int32Value(flags));
+  record->initReservedSlot(ScriptName, scriptName);
+  record->initReservedSlot(SourceURL, sourceURL);
+  record->initReservedSlot(PromiseKind, Int32Value(uint32_t(snapshot.kind)));
+  record->initReservedSlot(PromiseIndex, snapshot.generator ? NullValue() : NumberValue(snapshot.index));
   result.set(record);
   return true;
 }

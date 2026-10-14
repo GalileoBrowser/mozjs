@@ -47,6 +47,7 @@ class AutoAllocInAtomsZone;
 class AutoMaybeLeaveAtomsZone;
 class AutoNativeInvocation;
 class AutoNativeTrampolineInvocation;
+class AutoNativePromiseCombinatorCall;
 class AutoRealm;
 struct PortableBaselineStack;
 
@@ -442,6 +443,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   uint32_t nativeBuiltinDefinitionDepth = 0;
   bool nativeBuiltinStackCapture = false;
   const JS::Value* nativeStackCaptureSkipInvocation = nullptr;
+  // Non-owning links to real, GC-rooted Promise execution scopes. Scopes
+  // restore these pointers before their rooted fields leave the stack.
+  const JS::RootedObject* nativePromiseTaskPromise = nullptr;
+  js::AutoNativePromiseCombinatorCall* nativePromiseCombinatorCall = nullptr;
 
   /*
    * Stack of debuggers that currently disallow debuggee execution.

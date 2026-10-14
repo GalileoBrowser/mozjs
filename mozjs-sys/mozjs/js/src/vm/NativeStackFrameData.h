@@ -11,6 +11,7 @@ namespace js {
 class FrameIter;
 class ScriptSource;
 struct NativeInvocationSnapshot;
+struct NativePromiseStackSnapshot;
 
 // Private, per-capture native records. These are not CallSite-shaped JS objects
 // or reconstructed stack strings. The live function, receiver and source object
@@ -20,7 +21,8 @@ class NativeStackFrameData : public NativeObject {
  public:
   static const JSClass class_;
   enum Slots {
-    Function, Receiver, SourceObject, Flags, ScriptName, SourceURL, SlotCount
+    Function, Receiver, SourceObject, Flags, ScriptName, SourceURL,
+    PromiseKind, PromiseIndex, SlotCount
   };
   enum Flag : uint32_t {
     HasFunction = 1 << 0,
@@ -35,12 +37,16 @@ class NativeStackFrameData : public NativeObject {
     PublicBuiltin = 1 << 9,
     StackTransparent = 1 << 10,
     CppBuiltin = 1 << 11,
+    Async = 1 << 12,
+    PromiseCombinator = 1 << 13,
   };
 
   static bool capture(JSContext* cx, FrameIter& iter,
                       MutableHandleObject result);
   static bool isEvalSource(ScriptSource* source);
   static bool captureNative(JSContext* cx, const NativeInvocationSnapshot& invocation,
+                            MutableHandleObject result);
+  static bool capturePromise(JSContext* cx, const NativePromiseStackSnapshot& snapshot,
                             MutableHandleObject result);
 
   bool hasFlag(Flag flag) const {

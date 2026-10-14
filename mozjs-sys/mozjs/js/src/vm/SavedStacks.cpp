@@ -33,6 +33,8 @@
 #include "vm/FrameIter.h"
 #include "vm/NativeStackFrameData.h"
 #include "vm/NativeInvocation.h"
+#include "vm/NativePromiseStack.h"
+#include "vm/GeneratorObject.h"
 #include "vm/NativeBuiltinMetadata.h"
 #include "vm/GeckoProfiler.h"
 #include "vm/JSScript.h"
@@ -1512,7 +1514,8 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
   // skip those frames. Then each SavedFrame's parent is simply the frame that
   // follows it in the stackChain vector, even when it has an evalInFramePrev
   // link.
-  FrameIter iter(cx, capture.is<JS::AllFrames>()
+  const bool captureNative = cx->nativeBuiltinStackCapture;
+  FrameIter iter(cx, capture.is<JS::AllFrames>() && !captureNative
                          ? FrameIter::IGNORE_DEBUGGER_EVAL_PREV_LINK
                          : FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK);
 
@@ -1534,9 +1537,13 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
   bool seenStartAt = !startAt;
   bool framePushed = false;
 
-  const bool captureNative = cx->nativeBuiltinStackCapture;
   Rooted<NativeInvocationSnapshots> nativeInvocations(cx, NativeInvocationSnapshots());
   if (captureNative && !CaptureNativeInvocationSnapshots(cx, &nativeInvocations)) return false;
+  Rooted<NativePromiseStackSnapshots> promiseFrames(cx, NativePromiseStackSnapshots());
+  uint32_t promiseLimit = capture.is<JS::MaxFrames>() && capture.as<JS::MaxFrames>().maxFrames
+      ? capture.as<JS::MaxFrames>().maxFrames : UINT32_MAX;
+  if (captureNative && !CaptureNativePromiseStackSnapshots(cx, &promiseFrames, promiseLimit)) return false;
+  bool hasPromiseFrames = !promiseFrames.get().empty();
   bool nativeCaptureSatisfied = false;
   auto pushNativeForCaller = [&](Activation* activation, void* physical, unsigned inlineNo) {
     for (auto& invocation : nativeInvocations.get()) {
@@ -1582,6 +1589,13 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
     Activation& activation = *iter.activation();
     Maybe<LiveSavedFrameCache::FramePtr> framePtr =
         LiveSavedFrameCache::FramePtr::create(iter);
+    if (captureNative && framePtr) {
+      // Native per-capture function/receiver records and reaction-chain tails
+      // cannot be shared solely by script PC. Follow debugger-prev links in
+      // this uncached traversal; leave ordinary debugger capture unchanged.
+      framePtr->clearHasCachedSavedFrame();
+      framePtr = Nothing();
+    }
 
     if (capture.is<JS::AllFrames>() && iter.hasUsableAbstractFramePtr()) {
       unreachedEvalTargets.eraseIfEqual(iter.abstractFramePtr());
@@ -1711,7 +1725,7 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
     // stack.
     //
     // Captures using FirstSubsumedFrame expect us to ignore async parents.
-    bool hasAsyncStackToAdopt =
+    bool hasAsyncStackToAdopt = !hasPromiseFrames &&
         iter.activation() != &activation && activation.asyncStack() &&
         (activation.asyncCallIsExplicit() || iter.done()) &&
         !capture.is<JS::FirstSubsumedFrame>();
@@ -1779,6 +1793,42 @@ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
 
   if (captureNative && iter.done() && !nativeCaptureSatisfied &&
       !pushNativeForCaller(nullptr, nullptr, 0)) return false;
+
+  if (captureNative && iter.done() && !nativeCaptureSatisfied && seenStartAt) {
+    for (auto& snapshot : promiseFrames.get()) {
+      RootedObject function(cx, snapshot.combinator);
+      RootedScript script(cx);
+      Rooted<JSAtom*> sourceName(cx, cx->names().empty_);
+      uint32_t sourceId = 0, line = 0;
+      JS::TaggedColumnNumberOneOrigin column(JS::LimitedColumnNumberOneOrigin(1));
+      if (snapshot.generator) {
+        Rooted<AbstractGeneratorObject*> generator(cx, &snapshot.generator->as<AbstractGeneratorObject>());
+        function = &generator->callee();
+        script = generator->callee().nonLazyScript();
+        Rooted<JSAtom*> file(cx, Atomize(cx, script->filename() ? script->filename() : "",
+                                       script->filename() ? strlen(script->filename()) : 0));
+        if (!file) return false;
+        sourceName = file;
+        sourceId = script->scriptSource()->id();
+        JS::LimitedColumnNumberOneOrigin actualColumn;
+        jsbytecode* pc = script->offsetToPC(script->resumeOffsets()[generator->resumeIndex()]);
+        line = PCToLineNumber(script, pc, &actualColumn);
+        column = JS::TaggedColumnNumberOneOrigin(actualColumn);
+      }
+      if (!function || !function->is<JSFunction>()) continue;
+      JSPrincipals* principals = function->as<JSFunction>().realm()->principals();
+      auto subsumes = cx->runtime()->securityCallbacks->subsumes;
+      if (subsumes && !subsumes(cx->realm()->principals(), principals)) continue;
+      RootedObject data(cx);
+      if (!NativeStackFrameData::capturePromise(cx, snapshot, &data)) return false;
+      if (data->as<NativeStackFrameData>().hasFlag(NativeStackFrameData::StackTransparent)) continue;
+      Rooted<JSAtom*> displayName(cx, function->as<JSFunction>().maybePartialDisplayAtom());
+      if (!stackChain.emplaceBack(sourceName, sourceId, line, column, displayName,
+            nullptr, nullptr, principals, false, Nothing(), nullptr, nullptr, data)) return false;
+      if (captureIsSatisfied(cx, principals, sourceName, capture)) break;
+      if (capture.is<JS::MaxFrames>()) --capture.as<JS::MaxFrames>().maxFrames;
+    }
+  }
 
   // Iterate through |stackChain| in reverse order and get or create the
   // actual SavedFrame instances.

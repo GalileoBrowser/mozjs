@@ -15,7 +15,8 @@ namespace {
 class NativeBuiltinData : public NativeObject {
  public:
   static const JSClass class_;
-  enum { Role, SlotCount };
+  enum { Role, PromiseKind, PromiseIndex, PromiseCombinator,
+         PromiseConstructor, PromiseCapability, SlotCount };
 };
 const JSClass NativeBuiltinData::class_ = {
     "NativeBuiltinDefinitionData", JSCLASS_HAS_RESERVED_SLOTS(NativeBuiltinData::SlotCount)};
@@ -54,6 +55,45 @@ bool js::RegisterNativeBuiltinFunction(JSContext* cx, JS::HandleFunction functio
 uint32_t js::NativeBuiltinFunctionRole(JSObject* function) {
   auto* data = LookupNativeBuiltinDefinition(function);
   return data ? data->getReservedSlot(NativeBuiltinData::Role).toInt32() : 0;
+}
+
+bool js::RegisterNativePromiseElement(JSContext* cx, JS::HandleFunction element,
+    JS::HandleObject combinator, JS::HandleObject constructor,
+    JS::HandleObject capabilityPromise, uint32_t index,
+    NativePromiseCombinatorKind kind) {
+  MOZ_ASSERT(element->isNativeFun() && element->isExtended());
+  if (!combinator || !constructor || !capabilityPromise ||
+      kind == NativePromiseCombinatorKind::None) return true;
+  // The real factory supplies the public native function, never a property
+  // lookup at capture time or an authored function with a familiar name.
+  if (!(NativeBuiltinFunctionRole(combinator) & PublicNativeBuiltin)) return true;
+  RootedObject key(cx, element.get());
+  Rooted<NativeBuiltinData*> data(cx, NewObjectWithGivenProto<NativeBuiltinData>(cx, nullptr));
+  if (!data) return false;
+  data->initReservedSlot(NativeBuiltinData::Role, Int32Value(PrivatePromiseElement));
+  data->initReservedSlot(NativeBuiltinData::PromiseKind, Int32Value(uint32_t(kind)));
+  data->initReservedSlot(NativeBuiltinData::PromiseIndex, NumberValue(index));
+  data->initReservedSlot(NativeBuiltinData::PromiseCombinator, ObjectValue(*combinator));
+  data->initReservedSlot(NativeBuiltinData::PromiseConstructor, ObjectValue(*constructor));
+  data->initReservedSlot(NativeBuiltinData::PromiseCapability, ObjectValue(*capabilityPromise));
+  return ObjectRealm::get(element).putNativeBuiltinData(cx, key, data);
+}
+
+bool js::ReadNativePromiseElement(JSContext* cx, JS::HandleObject element,
+    JS::MutableHandleObject combinator, JS::MutableHandleObject constructor,
+    JS::MutableHandleObject capabilityPromise, uint32_t* index,
+    NativePromiseCombinatorKind* kind) {
+  combinator.set(nullptr); constructor.set(nullptr); capabilityPromise.set(nullptr);
+  *index = 0; *kind = NativePromiseCombinatorKind::None;
+  auto* data = LookupNativeBuiltinDefinition(element);
+  if (!data || !(data->getReservedSlot(NativeBuiltinData::Role).toInt32() & PrivatePromiseElement))
+    return true;
+  *kind = NativePromiseCombinatorKind(data->getReservedSlot(NativeBuiltinData::PromiseKind).toInt32());
+  *index = uint32_t(data->getReservedSlot(NativeBuiltinData::PromiseIndex).toNumber());
+  combinator.set(&data->getReservedSlot(NativeBuiltinData::PromiseCombinator).toObject());
+  constructor.set(&data->getReservedSlot(NativeBuiltinData::PromiseConstructor).toObject());
+  capabilityPromise.set(&data->getReservedSlot(NativeBuiltinData::PromiseCapability).toObject());
+  return true;
 }
 
 AutoNativeBuiltinStackCapture::AutoNativeBuiltinStackCapture(JSContext* cx, const JS::Value* skip)

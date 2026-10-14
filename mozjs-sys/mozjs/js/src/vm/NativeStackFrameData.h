@@ -48,6 +48,8 @@ class NativeStackFrameData : public NativeObject {
                             MutableHandleObject result);
   static bool capturePromise(JSContext* cx, const NativePromiseStackSnapshot& snapshot,
                             MutableHandleObject result);
+  static bool capturePromiseInvocation(JSContext* cx, FrameIter& iter,
+                                       MutableHandleObject result);
 
   bool hasFlag(Flag flag) const {
     return getReservedSlot(Flags).toInt32() & flag;

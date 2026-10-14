@@ -42,6 +42,44 @@ const JSClass NativeStackFrameData::class_ = {
     "NativeStackFrameData",
     JSCLASS_HAS_RESERVED_SLOTS(NativeStackFrameData::SlotCount)};
 
+const JSClass NativePromiseInvocationData::class_ = {
+    "NativePromiseInvocationData",
+    JSCLASS_HAS_RESERVED_SLOTS(NativePromiseInvocationData::SlotCount)};
+
+// Shared by ordinary frame capture and async suspension: retain the actual
+// invocation binding, including its already-initialized boxed sloppy receiver.
+// No authored getter, source-name inspection, or guessed receiver is involved.
+static bool CaptureNativeFrameReceiver(JSContext* cx, FrameIter& iter,
+                                      MutableHandleValue receiver) {
+  MOZ_ASSERT(iter.isFunctionFrame());
+  AutoRealmUnchecked ar(cx, iter.realm());
+  if (iter.isIon() && !iter.ensureHasRematerializedFrame(cx)) return false;
+  RootedFunction callee(cx, iter.callee(cx));
+  if (!callee) return false;
+  MOZ_ASSERT(iter.hasUsableAbstractFramePtr());
+  if (!callee->hasLexicalThis()) {
+    return GetThisValueForDebuggerFrameMaybeOptimizedOut(
+        cx, iter.abstractFramePtr(), iter.pc(), receiver);
+  }
+  // CallSite's arrow receiver is invocation state, not an evaluation of the
+  // arrow's lexical this expression. Initialize the real slot once, preserving
+  // boxed identity across suspension and repeated captures.
+  receiver.set(iter.thisArgument(cx));
+  if (!iter.script()->strict() && !receiver.isObject() && !receiver.isMagic()) {
+    AbstractFramePtr frame = iter.abstractFramePtr();
+    if (receiver.isNullOrUndefined()) {
+      RootedObject environment(cx, frame.environmentChain());
+      GetNonSyntacticGlobalThis(cx, environment, receiver);
+    } else {
+      RootedObject boxed(cx, BoxNonStrictThis(cx, receiver));
+      if (!boxed) return false;
+      receiver.setObject(*boxed);
+    }
+    frame.thisArgument() = receiver.get();
+  }
+  return true;
+}
+
 bool NativeStackFrameData::isEvalSource(ScriptSource* source) {
   if (!source || !source->hasIntroductionType()) return false;
   const char* kind = source->introductionType();
@@ -119,37 +157,7 @@ bool NativeStackFrameData::capture(JSContext* cx, FrameIter& iter,
         if (iter.isConstructing()) {
           flags |= Constructing;
         }
-        if (callee->hasLexicalThis()) {
-          // CallSite receiver state is invocation state, not an evaluation of
-          // the arrow's lexical `this` expression in an outer environment.
-          receiver = iter.thisArgument(cx);
-          if (!(flags & Strict) && !receiver.isObject() && !receiver.isMagic()) {
-            MOZ_ASSERT(iter.hasUsableAbstractFramePtr());
-            AbstractFramePtr frame = iter.abstractFramePtr();
-            if (receiver.isNullOrUndefined()) {
-              RootedObject environment(cx, frame.environmentChain());
-              GetNonSyntacticGlobalThis(cx, environment, &receiver);
-            } else {
-              RootedObject boxed(cx, BoxNonStrictThis(cx, receiver));
-              if (!boxed) return false;
-              receiver.setObject(*boxed);
-            }
-            // Initialize the actual invocation slot once, like the debugger's
-            // ordinary sloppy-this materialization. Later captures share this
-            // exact boxed receiver; the arrow's lexical binding is unchanged.
-            frame.thisArgument() = receiver.get();
-          }
-        } else {
-          // In particular, retain an already initialized boxed receiver from
-          // the real frame/environment binding; boxing thisArgument anew would
-          // lose object identity. This native helper also handles an unstarted
-          // binding and rematerialized frames without invoking page getters.
-          MOZ_ASSERT(iter.hasUsableAbstractFramePtr());
-          if (!GetThisValueForDebuggerFrameMaybeOptimizedOut(
-                  cx, iter.abstractFramePtr(), iter.pc(), &receiver)) {
-            return false;
-          }
-        }
+        if (!CaptureNativeFrameReceiver(cx, iter, &receiver)) return false;
       } else if (!iter.isModuleFrame()) {
         MOZ_ASSERT(iter.hasUsableAbstractFramePtr());
         RootedObject environment(cx, iter.abstractFramePtr().environmentChain());
@@ -211,14 +219,31 @@ bool NativeStackFrameData::captureNative(JSContext* cx, const NativeInvocationSn
   return true;
 }
 
+bool NativeStackFrameData::capturePromiseInvocation(JSContext* cx, FrameIter& iter,
+                                                    MutableHandleObject result) {
+  SavedStacks::AutoReentrancyGuard guard(cx->realm()->savedStacks());
+  RootedValue receiver(cx, UndefinedValue());
+  if (!CaptureNativeFrameReceiver(cx, iter, &receiver) ||
+      (!receiver.isMagic() && !cx->compartment()->wrap(cx, &receiver))) return false;
+  Rooted<NativePromiseInvocationData*> invocation(
+      cx, NewObjectWithGivenProto<NativePromiseInvocationData>(cx, nullptr));
+  if (!invocation) return false;
+  invocation->initReservedSlot(NativePromiseInvocationData::Receiver, receiver);
+  result.set(invocation);
+  return true;
+}
+
 bool js::RecordNativePromiseGeneratorInvocation(JSContext* cx, HandleObject object) {
   if (!cx->realm()->creationOptions().v8ErrorStackLimits()) return true;
   MOZ_ASSERT(object->is<AbstractGeneratorObject>());
+  // Synchronous generators never participate in the Promise continuation
+  // graph. Their live frames still use ordinary capture when requested.
   RootedFunction expectedFunction(cx, &object->as<AbstractGeneratorObject>().callee());
+  if (!expectedFunction->isAsync()) return true;
   FrameIter iter(cx);
   if (iter.done() || !iter.isFunctionFrame() || !iter.matchCallee(cx, expectedFunction)) return true;
   RootedObject invocation(cx);
-  if (!NativeStackFrameData::capture(cx, iter, &invocation)) return false;
+  if (!NativeStackFrameData::capturePromiseInvocation(cx, iter, &invocation)) return false;
   // This private ephemeron retains the actual function invocation's receiver,
   // including an initialized boxed this. It does not create a generator-layout
   // slot or infer a receiver from names/globals after suspension.
@@ -258,8 +283,9 @@ bool NativeStackFrameData::capturePromise(JSContext* cx,
         sourceURL.setString(value);
       }
       RootedObject invocation(cx, ObjectRealm::get(generator).getNativeBuiltinData(generator));
-      if (invocation && invocation->is<NativeStackFrameData>()) {
-        receiver = invocation->as<NativeStackFrameData>().getReservedSlot(Receiver);
+      if (invocation && invocation->is<NativePromiseInvocationData>()) {
+        receiver = invocation->as<NativePromiseInvocationData>().getReservedSlot(
+            NativePromiseInvocationData::Receiver);
       } else if (!GetThisValueForDebuggerSuspendedGeneratorMaybeOptimizedOut(cx, *generator, script, &receiver)) {
         return false;
       }

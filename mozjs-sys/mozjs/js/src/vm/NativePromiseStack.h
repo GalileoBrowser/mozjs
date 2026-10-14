@@ -6,8 +6,19 @@
 #include "js/GCVector.h"
 #include "js/RootingAPI.h"
 #include "vm/NativeBuiltinMetadata.h"
+#include "vm/NativeObject.h"
 
 namespace js {
+// Suspension only needs the real invocation receiver. Function/source/location
+// already remain available from the generator's actual callee and script.
+// Keep this private record small, rather than allocating a full stack capture
+// and copying source-name strings for every async invocation.
+class NativePromiseInvocationData : public NativeObject {
+ public:
+  static const JSClass class_;
+  enum Slots { Receiver, SlotCount };
+};
+
 // Actual suspended generator or actual element-factory/capability state.
 // This is not a public CallSite object or a reconstructed stack-name string.
 struct NativePromiseStackSnapshot {

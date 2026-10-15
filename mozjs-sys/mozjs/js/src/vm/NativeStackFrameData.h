@@ -41,6 +41,20 @@ class NativeStackFrameData : public NativeObject {
     PromiseCombinator = 1 << 13,
   };
 
+  // Preserve why a captured receiver is unavailable without exposing engine
+  // sentinel values through public CallSite accessors.
+  static uint32_t receiverFlags(const Value& receiver) {
+    if (!receiver.isMagic()) return 0;
+    uint32_t flags = ReceiverUnavailable;
+    // isMagic(why) asserts that *any* magic value has exactly that reason; it
+    // is not a predicate for choosing between different sentinel kinds. Live
+    // frame rematerialization may legitimately return JS_OPTIMIZED_OUT.
+    if (receiver.whyMagic() == JS_UNINITIALIZED_LEXICAL) {
+      flags |= UninitializedReceiver;
+    }
+    return flags;
+  }
+
   static bool capture(JSContext* cx, FrameIter& iter,
                       MutableHandleObject result);
   static bool isEvalSource(ScriptSource* source);

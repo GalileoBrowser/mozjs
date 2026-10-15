@@ -167,12 +167,7 @@ bool NativeStackFrameData::capture(JSContext* cx, FrameIter& iter,
   }
   // Keep genuinely unavailable/rematerialization values distinguishable from
   // a real undefined receiver. No public getter may return an engine MagicValue.
-  if (receiver.isMagic()) {
-    flags |= ReceiverUnavailable;
-    if (receiver.isMagic(JS_UNINITIALIZED_LEXICAL)) {
-      flags |= UninitializedReceiver;
-    }
-  }
+  flags |= receiverFlags(receiver);
   if (!cx->compartment()->wrap(cx, &function) ||
       !cx->compartment()->wrap(cx, &source) ||
       (!receiver.isMagic() && !cx->compartment()->wrap(cx, &receiver)) ||

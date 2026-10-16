@@ -10,6 +10,7 @@
 
 #include "util/StringBuilder.h"
 #include "vm/Interpreter.h"
+#include "vm/Realm.h"
 #include "vm/Shape.h"
 #include "vm/Stack.h"
 
@@ -123,6 +124,17 @@ JSString* BoundFunctionObject::funToString(JSContext* cx, Handle<JSObject*> obj,
     static constexpr std::string_view nativeCodeBound =
         "function bound() {\n    [native code]\n}";
     return NewStringCopy<CanGC>(cx, nativeCodeBound);
+  }
+
+  // Binding creates a callable without exposing its target source or name.
+  // Select only the representation; invocation and target slots are unchanged.
+  if (obj->as<BoundFunctionObject>()
+          .realm()
+          ->creationOptions()
+          .compactNativeFunctionSource()) {
+    static constexpr std::string_view compactNativeCode =
+        "function () { [native code] }";
+    return NewStringCopy<CanGC>(cx, compactNativeCode);
   }
 
   static constexpr std::string_view nativeCode =

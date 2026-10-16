@@ -1,12 +1,14 @@
-# Galileo SpiderMonkey glue ABI 140.12.2
+# Galileo SpiderMonkey glue ABI 140.12.3 (unpublished candidate)
 
-This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
-source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
-Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
-teardown, and WebAssembly preference helpers into the same `libjsglue` archive
-and generated `gluebindings.rs` as the rest of rust-mozjs.
+This candidate extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
+source at commit `3120fde754ae9efc091a9c1cf1b8b90051b6c18c`. It retains the
+ownership, proxy, isolated-realm, JIT teardown, and WebAssembly helpers in the
+same `libjsglue` archive and generated `gluebindings.rs` as rust-mozjs. It adds
+a realm-creation native function source policy, which changes the compiled
+options contract. New generated bindings must not link old ABI 140.12.2
+archives, even on platforms where the extra option fits existing padding.
 
-`GalileoMozjsGlueAbi_140_12_2` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_3` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +26,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.2
+release tag: galileo-mozjs-glue-abi-140.12.3
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +51,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.2`.
+   `galileo-mozjs-glue-abi-140.12.3`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -96,3 +98,24 @@ native cleanup is finished, and join outstanding helpers before engine shutdown.
 
 This branch does not publish a crate or release automatically. New platform
 archives must satisfy the same matrix and ABI verifier before publication.
+
+## Realm-owned native function source
+
+`compactNativeFunctionSource` defaults to false and is independent of native
+error stack features. Embedders choose the policy before creating each realm.
+The compact serializer uses a callable's internal initial name, including
+native accessor prefixes; it never reads the mutable public `name` property.
+Bound functions and callable proxies retain their source-hiding hooks. Authored
+source text and the non-standard `toSource` path are not rewritten.
+
+`Servo_UsesCompactNativeFunctionSource` lets host callable objects read their
+own realm's immutable policy, without reading public JavaScript properties or
+unwrapping cross-compartment wrappers. A null object or a wrapper without a
+single meaningful realm returns false; authorized forwarding hooks query the
+unwrapped host object only after the engine's normal access checks.
+
+The native integration test checks alternating realm policies, the host query,
+original authored source bytes, native initial names, and source-hiding hooks.
+Browser binding integration, actual native tests, comparison against
+Chrome/Firefox, and platform ABI checks are required before publication. This
+candidate does not enable the policy by default or publish native archives.

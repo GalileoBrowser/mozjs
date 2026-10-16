@@ -58,6 +58,7 @@
 #include "vm/JSScript.h"
 #include "vm/NumberObject.h"
 #include "vm/PlainObject.h"  // js::PlainObject
+#include "vm/Realm.h"
 #include "vm/SelfHosting.h"
 #include "vm/Shape.h"
 #include "vm/StringObject.h"
@@ -922,6 +923,20 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
 
   if (haveSource) {
     if (!fun->baseScript()->appendSourceDataForToString(cx, out)) {
+      return nullptr;
+    }
+  } else if (!isToSource &&
+             fun->realm()->creationOptions().compactNativeFunctionSource()) {
+    // Use the function's internal initial name, never its mutable public name
+    // property. getExplicitName also resolves native accessor prefixes from
+    // engine metadata without invoking a user-defined getter or proxy trap.
+    // The authored-source fast path above is deliberately unaffected.
+    Rooted<JSAtom*> name(cx);
+    if (!fun->getExplicitName(cx, &name)) {
+      return nullptr;
+    }
+    if (!out.append("function ") || (name && !out.append(name)) ||
+        !out.append("() { [native code] }")) {
       return nullptr;
     }
   } else if (!isToSource) {

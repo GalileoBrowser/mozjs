@@ -13,6 +13,7 @@
 #include "proxy/DeadObjectProxy.h"
 #include "vm/Interpreter.h"
 #include "vm/ProxyObject.h"
+#include "vm/Realm.h"
 #include "vm/WrapperObject.h"
 
 #include "vm/JSContext-inl.h"
@@ -312,6 +313,10 @@ const char* BaseProxyHandler::className(JSContext* cx,
 JSString* BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy,
                                          bool isToSource) const {
   if (proxy->isCallable()) {
+    if (!isToSource &&
+        cx->realm()->creationOptions().compactNativeFunctionSource()) {
+      return JS_NewStringCopyZ(cx, "function () { [native code] }");
+    }
     return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
   }
 

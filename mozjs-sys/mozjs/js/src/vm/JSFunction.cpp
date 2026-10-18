@@ -58,6 +58,7 @@
 #include "vm/JSScript.h"
 #include "vm/NumberObject.h"
 #include "vm/PlainObject.h"  // js::PlainObject
+#include "vm/Realm.h"
 #include "vm/SelfHosting.h"
 #include "vm/Shape.h"
 #include "vm/StringObject.h"
@@ -950,8 +951,28 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
                   : hasGetterOrSetterPrefix(name->twoByteChars(nogc)));
     };
 
-    if (!out.append("function")) {
+    const bool compact =
+        cx->realm()->creationOptions().compactNativeFunctionSource();
+
+    if (!(compact ? out.append("function ") : out.append("function"))) {
       return nullptr;
+    }
+
+    if (compact) {
+      // Use the engine's immutable explicit name, including lazily named
+      // accessors. Reading the public .name property would invoke user code and
+      // make serialization depend on subsequent property mutations.
+      JS::Rooted<JSAtom*> name(cx);
+      if (!fun->getExplicitName(cx, &name)) {
+        return nullptr;
+      }
+      if (name && !out.append(name)) {
+        return nullptr;
+      }
+      if (!out.append("() { [native code] }")) {
+        return nullptr;
+      }
+      return out.finishString();
     }
 
     // We don't want to fully parse the function's name here because of

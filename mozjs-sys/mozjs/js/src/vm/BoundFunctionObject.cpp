@@ -10,6 +10,7 @@
 
 #include "util/StringBuilder.h"
 #include "vm/Interpreter.h"
+#include "vm/Realm.h"
 #include "vm/Shape.h"
 #include "vm/Stack.h"
 
@@ -123,6 +124,11 @@ JSString* BoundFunctionObject::funToString(JSContext* cx, Handle<JSObject*> obj,
     static constexpr std::string_view nativeCodeBound =
         "function bound() {\n    [native code]\n}";
     return NewStringCopy<CanGC>(cx, nativeCodeBound);
+  }
+
+  if (cx->realm()->creationOptions().compactNativeFunctionSource()) {
+    return NewStringCopy<CanGC>(
+        cx, std::string_view("function () { [native code] }"));
   }
 
   static constexpr std::string_view nativeCode =

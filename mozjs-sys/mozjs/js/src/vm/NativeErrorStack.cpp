@@ -15,6 +15,7 @@
 #include "js/Wrapper.h"
 #include "util/StringBuilder.h"
 #include "vm/GlobalObject.h"
+#include "vm/ErrorObject.h"
 #include "vm/JSFunction.h"
 #include "vm/NativeObject.h"
 #include "vm/EnvironmentObject.h"
@@ -587,7 +588,8 @@ bool js::ReadNativeErrorStackFrameValue(JSContext* cx, HandleObject receiver,
 bool js::InstallNativeErrorStack(JSContext* cx, HandleObject receiver,
                                  HandleObject stack, bool enabled,
                                  HandleString originalMessage,
-                                 bool preferOriginalMessage) {
+                                 bool preferOriginalMessage,
+                                 bool initializingError) {
   // A same-origin cross-compartment wrapper is not the private-record key.
   // Enter the checked actual target's realm; its own shared accessors must
   // likewise belong to that realm. Ordinary JS proxies are not unwrapped.
@@ -637,8 +639,16 @@ bool js::InstallNativeErrorStack(JSContext* cx, HandleObject receiver,
   RootedObject getter(cx, globalData.nativeErrorStackGetter);
   RootedObject setter(cx, globalData.nativeErrorStackSetter);
   RootedId id(cx, NameToId(cx->names().stack));
-  if (!DefineAccessorProperty(cx, target, id, getter, setter, 0)) {
-    return false;
+  if (initializingError) {
+    MOZ_ASSERT(target->is<ErrorObject>());
+    Rooted<ErrorObject*> error(cx, &target->as<ErrorObject>());
+    if (!ErrorObject::initStackAccessor(cx, error, getter, setter)) {
+      return false;
+    }
+  } else {
+    if (!DefineAccessorProperty(cx, target, id, getter, setter, 0)) {
+      return false;
+    }
   }
   return ObjectRealm::get(target).putErrorStackData(cx, target, data);
 }

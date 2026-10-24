@@ -289,7 +289,8 @@ class GlobalObject : public NativeObject {
   friend bool InstallNativeErrorStack(JSContext* cx, JS::HandleObject receiver,
                                       JS::HandleObject stack, bool enabled,
                                       JS::HandleString originalMessage,
-                                      bool preferOriginalMessage);
+                                      bool preferOriginalMessage,
+                                      bool initializingError);
   friend bool BuildNativeCallSites(JSContext* cx, JS::HandleObject stack,
                                   JS::MutableHandleObject result);
 

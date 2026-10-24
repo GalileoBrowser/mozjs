@@ -13,7 +13,8 @@ namespace js {
 bool InstallNativeErrorStack(JSContext* cx, JS::HandleObject receiver,
                              JS::HandleObject stack, bool enabled,
                              JS::HandleString originalMessage = nullptr,
-                             bool preferOriginalMessage = false);
+                             bool preferOriginalMessage = false,
+                             bool initializingError = false);
 
 // Trusted embedding inspection of a same-realm private snapshot. This is not a
 // web-exposed CallSite getter: formatter privacy/branding remains separate.

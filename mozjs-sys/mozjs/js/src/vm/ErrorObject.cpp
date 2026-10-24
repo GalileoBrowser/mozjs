@@ -42,6 +42,7 @@
 #include "util/StringBuilder.h"
 #include "vm/ErrorReporting.h"
 #include "vm/GlobalObject.h"
+#include "vm/GetterSetter.h"
 #include "vm/Iteration.h"
 #include "vm/JSAtomUtils.h"  // ClassName
 #include "vm/JSFunction.h"
@@ -274,6 +275,11 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
   // non-standard fileName and lineNumber arguments when we have an options
   // object argument.
   bool hasOptions = args.get(messageArg + 1).isObject();
+  // Only the explicit Gecko policy accepts the non-standard location
+  // arguments. Other realms must not convert ignored extra values: those
+  // conversions can execute authored code or wrongly throw for Symbols.
+  const bool hasLegacyLocationArguments =
+      !cx->realm()->creationOptions().v8ErrorStackLimits() && !hasOptions;
 
   Rooted<mozilla::Maybe<Value>> cause(cx, mozilla::Nothing());
   if (hasOptions) {
@@ -298,7 +304,7 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
 
   RootedString fileName(cx);
   uint32_t sourceId = 0;
-  if (!hasOptions && args.length() > messageArg + 1) {
+  if (hasLegacyLocationArguments && args.length() > messageArg + 1) {
     fileName = ToString<CanGC>(cx, args[messageArg + 1]);
   } else {
     fileName = cx->runtime()->emptyString;
@@ -318,7 +324,7 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
 
   uint32_t lineNumber;
   JS::ColumnNumberOneOrigin columnNumber;
-  if (!hasOptions && args.length() > messageArg + 2) {
+  if (hasLegacyLocationArguments && args.length() > messageArg + 2) {
     if (!ToUint32(cx, args[messageArg + 2], &lineNumber)) {
       return nullptr;
     }
@@ -556,6 +562,8 @@ SharedShape* js::ErrorObject::assignInitialShape(JSContext* cx,
                                                  Handle<ErrorObject*> obj) {
   MOZ_ASSERT(obj->empty());
 
+  MOZ_ASSERT(!cx->realm()->creationOptions().v8ErrorStackLimits());
+
   constexpr PropertyFlags propFlags = {PropertyFlag::Configurable,
                                        PropertyFlag::Writable};
 
@@ -584,7 +592,8 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
                            uint32_t sourceId, uint32_t lineNumber,
                            JS::ColumnNumberOneOrigin columnNumber,
                            HandleString message,
-                           Handle<mozilla::Maybe<JS::Value>> cause) {
+                           Handle<mozilla::Maybe<JS::Value>> cause,
+                           bool stackEnabled) {
   MOZ_ASSERT(JSEXN_ERR <= type && type < JSEXN_ERROR_LIMIT);
   AssertObjectIsSavedFrameOrWrapper(cx, stack);
   cx->check(obj, stack);
@@ -592,7 +601,35 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   // Null out early in case of error, for exn_finalize's sake.
   obj->initReservedSlot(ERROR_REPORT_SLOT, PrivateValue(nullptr));
 
-  if (!SharedShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
+  // Common-policy Errors start with the ordinary empty native shape. The
+  // custom shape cache requires a non-empty shape and is only needed for
+  // Gecko's public legacy location properties. Both policies retain the
+  // real reserved diagnostic slots independently of their public shapes.
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      !SharedShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
+    return false;
+  }
+
+  // Keep the real private report location and captured frames, including
+  // while allocating the GC-traced native stack record below. Debugger/error
+  // reporting must not depend on public legacy location properties.
+  obj->initReservedSlot(STACK_SLOT, ObjectOrNullValue(stack));
+  obj->initReservedSlot(FILENAME_SLOT, StringValue(fileName));
+  obj->initReservedSlot(LINENUMBER_SLOT, Int32Value(lineNumber));
+  obj->initReservedSlot(COLUMNNUMBER_SLOT,
+                        Int32Value(columnNumber.oneOriginValue()));
+  obj->initReservedSlot(SOURCEID_SLOT, Int32Value(sourceId));
+  if (obj->mightBeWasmTrap()) {
+    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(obj->getClass()) > WASM_TRAP_SLOT);
+    obj->initReservedSlot(WASM_TRAP_SLOT, BooleanValue(false));
+  }
+
+  // Native stack is the first public own property under the common policy.
+  // Install its actual private record/accessors before message and cause, not
+  // a placeholder value or a later property-order rewrite.
+  if (cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      !InstallNativeErrorStack(cx, obj, stack, stackEnabled, message, true,
+                               true)) {
     return false;
   }
 
@@ -621,12 +658,14 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
     }
   }
 
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().fileName))->slot() ==
-             FILENAME_SLOT);
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().lineNumber))->slot() ==
-             LINENUMBER_SLOT);
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().columnNumber))->slot() ==
-             COLUMNNUMBER_SLOT);
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits()) {
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().fileName))->slot() ==
+               FILENAME_SLOT);
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().lineNumber))->slot() ==
+               LINENUMBER_SLOT);
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().columnNumber))->slot() ==
+               COLUMNNUMBER_SLOT);
+  }
   MOZ_ASSERT_IF(
       message,
       obj->lookupPure(NameToId(cx->names().message))->slot() == MESSAGE_SLOT);
@@ -635,12 +674,7 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
       obj->lookupPure(NameToId(cx->names().cause))->slot() == CAUSE_SLOT);
 
   JSErrorReport* report = errorReport.release();
-  obj->initReservedSlot(STACK_SLOT, ObjectOrNullValue(stack));
   obj->setReservedSlot(ERROR_REPORT_SLOT, PrivateValue(report));
-  obj->initReservedSlot(FILENAME_SLOT, StringValue(fileName));
-  obj->initReservedSlot(LINENUMBER_SLOT, Int32Value(lineNumber));
-  obj->initReservedSlot(COLUMNNUMBER_SLOT,
-                        Int32Value(columnNumber.oneOriginValue()));
   if (message) {
     obj->initReservedSlot(MESSAGE_SLOT, StringValue(message));
   }
@@ -649,12 +683,26 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   } else {
     obj->initReservedSlot(CAUSE_SLOT, MagicValue(JS_ERROR_WITHOUT_CAUSE));
   }
-  obj->initReservedSlot(SOURCEID_SLOT, Int32Value(sourceId));
-  if (obj->mightBeWasmTrap()) {
-    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(obj->getClass()) > WASM_TRAP_SLOT);
-    obj->initReservedSlot(WASM_TRAP_SLOT, BooleanValue(false));
-  }
+  return true;
+}
 
+/* static */
+bool js::ErrorObject::initStackAccessor(JSContext* cx, Handle<ErrorObject*> obj,
+                                       HandleObject getter,
+                                       HandleObject setter) {
+  MOZ_ASSERT(cx->realm()->creationOptions().v8ErrorStackLimits());
+  MOZ_ASSERT(obj->empty());
+  Rooted<GetterSetter*> pair(cx, GetterSetter::create(cx, getter, setter));
+  if (!pair) {
+    return false;
+  }
+  constexpr PropertyFlags flags = {PropertyFlag::Configurable,
+                                    PropertyFlag::AccessorProperty};
+  if (!NativeObject::addPropertyInReservedSlot(
+          cx, obj, cx->names().stack, STACK_ACCESSOR_SLOT, flags)) {
+    return false;
+  }
+  obj->initReservedSlot(STACK_ACCESSOR_SLOT, PrivateGCThingValue(pair));
   return true;
 }
 
@@ -691,13 +739,7 @@ ErrorObject* js::ErrorObject::create(JSContext* cx, JSExnType errorType,
 
   if (!ErrorObject::init(cx, errObject, errorType, std::move(report), fileName,
                          stack, sourceId, lineNumber, columnNumber, message,
-                         cause)) {
-    return nullptr;
-  }
-
-  if (cx->realm()->creationOptions().v8ErrorStackLimits() &&
-      !InstallNativeErrorStack(cx, errObject, stack, stackEnabled, message,
-                               true)) {
+                         cause, stackEnabled)) {
     return nullptr;
   }
   return errObject;

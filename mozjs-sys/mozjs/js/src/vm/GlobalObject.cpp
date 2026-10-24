@@ -399,14 +399,38 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
     global->setConstructor(key, ctor);
   }
 
+  // Error families in common compatibility realms initialize their actual
+  // native prototype in constructor/name/message/method order. Other classes
+  // and the explicit Gecko policy retain the existing class-spec sequence.
+  const bool commonErrorOrder =
+      cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      ErrorObject::isErrorClass(clasp);
+  if (commonErrorOrder) {
+    MOZ_ASSERT(proto);
+    if (!LinkConstructorAndPrototype(cx, ctor, proto)) {
+      return false;
+    }
+    const JSPropertySpec* props = clasp->specPrototypeProperties();
+    MOZ_ASSERT(props);
+    // Every Error family declares message then name in its immutable native
+    // class metadata. Reuse those genuine values/attributes in native order;
+    // do not manufacture replacement constructors, getters or diagnostic text.
+    const JSPropertySpec orderedProperties[] = {props[1], props[0], JS_PS_END};
+    if (!JS_DefineProperties(cx, proto, orderedProperties)) {
+      return false;
+    }
+  }
+
   if (const JSFunctionSpec* funs = clasp->specPrototypeFunctions()) {
     if (!JS_DefineFunctions(cx, proto, funs)) {
       return false;
     }
   }
-  if (const JSPropertySpec* props = clasp->specPrototypeProperties()) {
-    if (!JS_DefineProperties(cx, proto, props)) {
-      return false;
+  if (!commonErrorOrder) {
+    if (const JSPropertySpec* props = clasp->specPrototypeProperties()) {
+      if (!JS_DefineProperties(cx, proto, props)) {
+        return false;
+      }
     }
   }
   if (const JSFunctionSpec* funs = clasp->specConstructorFunctions()) {
@@ -421,7 +445,7 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
   }
 
   // If the prototype exists, link it with the constructor.
-  if (proto && !LinkConstructorAndPrototype(cx, ctor, proto)) {
+  if (proto && !commonErrorOrder && !LinkConstructorAndPrototype(cx, ctor, proto)) {
     return false;
   }
 

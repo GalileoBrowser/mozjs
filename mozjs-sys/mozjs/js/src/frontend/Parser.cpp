@@ -4900,6 +4900,14 @@ GeneralParser<ParseHandler, Unit>::declarationList(
 
     Node binding;
     if (tt == TokenKind::LeftBracket || tt == TokenKind::LeftCurly) {
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+      if (declKind == DeclarationKind::Using ||
+          declKind == DeclarationKind::AwaitUsing) {
+        MOZ_ASSERT(!initialDeclaration);
+        error(JSMSG_NO_DESTRUCT_IN_USING);
+        return errorResult();
+      }
+#endif
       MOZ_TRY_VAR(binding, declarationPattern(declKind, tt, initialDeclaration,
                                               yieldHandling, forHeadKind,
                                               forInOrOfExpression));
@@ -6591,9 +6599,23 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
       return false;
     }
 
-    if (nextTok == TokenKind::Of || !TokenKindIsPossibleIdentifier(nextTok)) {
-      anyChars.ungetToken();  // we didnt find a valid case of using decl put
-                              // back the token
+    if (!TokenKindIsPossibleIdentifier(nextTok)) {
+      anyChars.ungetToken();  // Not a using declaration.
+    } else if (nextTok == TokenKind::Of) {
+      // In "for (using of = null;;)", "of" is the binding identifier.
+      // Without "=", "for (using of iterable)" uses the identifier "using".
+      tokenStream.consumeKnownToken(nextTok);
+      TokenKind nextTokAssign;
+      if (!tokenStream.peekToken(&nextTokAssign, TokenStream::SlashIsRegExp)) {
+        return false;
+      }
+      if (nextTokAssign == TokenKind::Assign) {
+        parsingLexicalDeclaration = true;
+        anyChars.ungetToken();
+      } else {
+        anyChars.ungetToken();
+        anyChars.ungetToken();
+      }
     } else {
       parsingLexicalDeclaration = true;
     }

@@ -1671,7 +1671,11 @@ class DebugEnvironmentProxyHandler : public NurseryAllocableProxyHandler {
         return true;
       }
 
-      if (action == SET && bi.kind() == BindingKind::Const) {
+      if (action == SET && (bi.kind() == BindingKind::Const
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+                            || bi.kind() == BindingKind::Using
+#endif
+                            )) {
         ReportRuntimeLexicalError(cx, JSMSG_BAD_CONST_ASSIGN, id);
         return false;
       }
@@ -1796,7 +1800,11 @@ class DebugEnvironmentProxyHandler : public NurseryAllocableProxyHandler {
         return true;
       }
 
-      if (action == SET && bi.kind() == BindingKind::Const) {
+      if (action == SET && (bi.kind() == BindingKind::Const
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+                            || bi.kind() == BindingKind::Using
+#endif
+                            )) {
         ReportRuntimeLexicalError(cx, JSMSG_BAD_CONST_ASSIGN, id);
         return false;
       }

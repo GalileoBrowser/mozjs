@@ -33,6 +33,13 @@ fn native_resource_management_supports_real_builtins_disposal_and_using_syntax()
                 r#"(() => {{
                 const compact = {compact};
                 const check = (value, label) => {{ if (!value) throw new Error(label); }};
+                const throws = (run, constructor, label) => {{
+                    try {{ run(); }} catch (error) {{
+                        check(error instanceof constructor, label + ': wrong error');
+                        return;
+                    }}
+                    throw new Error(label + ': no error');
+                }};
                 const source = value => Function.prototype.toString.call(value);
                 const suffix = compact ? '() {{ [native code] }}' : '() {{\n    [native code]\n}}';
                 for (const [ctor, name] of [[DisposableStack,'DisposableStack'],
@@ -85,6 +92,26 @@ fn native_resource_management_supports_real_builtins_disposal_and_using_syntax()
                     return() {{ returned++; return {{done:true}}; }} }});
                 iterator[Symbol.dispose]();
                 check(returned === 1, 'iterator disposal calls return');
+                new Function('for (using of = null;;) break;')();
+                for (const prefix of ['using', 'await using']) {{
+                    for (const pattern of ['[]', '{{}}']) {{
+                        const body = prefix + ' x = null, ' + pattern + ' = null;';
+                        throws(() => new Function(prefix === 'using' ? body :
+                            'return async function(){{' + body + '}}'), SyntaxError,
+                            'resource declarations reject destructuring');
+                    }}
+                }}
+                throws(() => eval('using x = null;'), SyntaxError,
+                    'using is forbidden at eval top level');
+                for (const body of [
+                    'using x = null; x = undefined;',
+                    'for (using x = null; x === null; x = undefined) {{}}',
+                    'for (using x of [null]) {{ x = undefined; }}',
+                    'using x = null; (() => {{ x = undefined; }})();',
+                    'using x = null; eval("x = undefined");',
+                ]) {{
+                    throws(new Function(body), TypeError, 'resource binding is immutable');
+                }}
                 // Compile the actual syntax in the native parser. Browser tests
                 // additionally execute it with the embedding's real job queue.
                 const asynchronous = async function() {{

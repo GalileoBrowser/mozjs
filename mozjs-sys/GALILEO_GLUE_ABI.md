@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.30
+# Galileo SpiderMonkey glue ABI 140.12.31
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_30` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_31` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.30
+release tag: galileo-mozjs-glue-abi-140.12.31
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.30`.
+   `galileo-mozjs-glue-abi-140.12.31`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -118,3 +118,13 @@ in their script/optimized-code cache build ID and pass real byte pointers to its
 build-ID callback; a constant unrelated identity is insufficient across feature
 changes. Native engine tests qualify the actual constructors, disposal and parser;
 full asynchronous behavior is additionally verified in browser/worker realms.
+
+## Resource-management parser and immutable bindings
+
+ABI 140.12.31 additionally backports the native using grammar restrictions,
+for-head disambiguation, and immutable resource bindings. The parser and name
+location changes are adapted from Mozilla source commit
+`f9b0e312b2837e6f1af3149ed16b9d99d090a1ce`. Resource bindings remain read-only
+through both compiled assignments and lexical environment properties, including
+captured bindings and direct eval. A distinct ABI also invalidates cached code
+and generated error-number enums from the earlier feature configuration.

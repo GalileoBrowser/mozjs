@@ -407,6 +407,7 @@ MSG_DEF(JSMSG_ASSERT_KEY_EXPECTED,     0, JSEXN_SYNTAXERR, "expected assertion k
 MSG_DEF(JSMSG_DECORATOR_NAME_EXPECTED, 0, JSEXN_SYNTAXERR, "expected property name in decorator expression")
 MSG_DEF(JSMSG_CLASS_EXPECTED,          0, JSEXN_SYNTAXERR, "expected class")
 MSG_DEF(JSMSG_NO_IN_WITH_USING,        0, JSEXN_SYNTAXERR, "'using' is not allowed in a for-in loop")
+MSG_DEF(JSMSG_NO_DESTRUCT_IN_USING,    0, JSEXN_SYNTAXERR, "destructuring patterns are not allowed in using declarations")
 MSG_DEF(JSMSG_USING_OUTSIDE_BLOCK_OR_MODULE, 0, JSEXN_SYNTAXERR, "'using' is only allowed in block statements or inside a module")
 
 // UTF-8 source text encoding errors

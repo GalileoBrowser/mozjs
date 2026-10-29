@@ -10,9 +10,11 @@
 #include "gc/GC.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Proxy.h"
+#include "js/Realm.h"
 #include "proxy/DeadObjectProxy.h"
 #include "vm/Interpreter.h"
 #include "vm/ProxyObject.h"
+#include "vm/Realm.h"
 #include "vm/WrapperObject.h"
 
 #include "vm/JSContext-inl.h"
@@ -312,6 +314,17 @@ const char* BaseProxyHandler::className(JSContext* cx,
 JSString* BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy,
                                          bool isToSource) const {
   if (proxy->isCallable()) {
+    // A rejected cross-compartment wrapper reaches this safe fallback without
+    // unwrapping its target. Such wrappers have no single meaningful realm;
+    // use the active caller policy without bypassing the access check.
+    JS::Realm* realm = JS::GetObjectRealmOrNull(proxy);
+    if (!realm) {
+      realm = cx->realm();
+    }
+    if (!isToSource && realm &&
+        realm->creationOptions().compactNativeFunctionSource()) {
+      return JS_NewStringCopyZ(cx, "function () { [native code] }");
+    }
     return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
   }
 

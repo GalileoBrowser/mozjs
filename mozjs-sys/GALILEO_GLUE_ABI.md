@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.2
+# Galileo SpiderMonkey glue ABI 140.12.29
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_2` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_29` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.2
+release tag: galileo-mozjs-glue-abi-140.12.29
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.2`.
+   `galileo-mozjs-glue-abi-140.12.29`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -80,7 +80,7 @@ an additional runtime assertion on top of the unconditional link sentinel.
 
 ## Frontend-only script preparation
 
-ABI140.12.2 adds an opaque frontend context and stencil bridge. Create the
+ABI140.12.29 adds an opaque frontend context and stencil bridge. Create the
 frontend while the engine is initialized; compile on a helper with that helper's
 actual stack-size quota. Never pass a page JSContext to the compile entry point.
 The ReadOnlyCompileOptions must have owning lifetime (including its filename)
@@ -96,3 +96,12 @@ native cleanup is finished, and join outstanding helpers before engine shutdown.
 
 This branch does not publish a crate or release automatically. New platform
 archives must satisfy the same matrix and ABI verifier before publication.
+
+## Native function source policy
+
+ABI 140.12.29 adds an immutable `RealmCreationOptions` policy for compact native
+function serialization and `Servo_UsesCompactNativeFunctionSource`. The policy
+uses internal function names, covers bound functions and callable proxies, and
+retains authored function source. Embedders select the policy before creating a
+realm; Firefox-style serialization is the default. The existing ownership,
+frontend, WebAssembly and isolated-realm bridges remain part of the same ABI.

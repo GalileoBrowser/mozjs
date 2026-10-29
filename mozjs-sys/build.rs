@@ -51,8 +51,8 @@ const SM_TARGET_ENV_VARS: &'static [&'static str] = &[
 
 const EXTRA_FILES: &'static [&'static str] = &["makefile.cargo", "src/glue.rs", "src/jsglue.cpp"];
 
-const GALILEO_GLUE_ABI_SYMBOL: &str = "GalileoMozjsGlueAbi_140_12_2";
-const GALILEO_GLUE_RELEASE_TAG: &str = "galileo-mozjs-glue-abi-140.12.2";
+const GALILEO_GLUE_ABI_SYMBOL: &str = "GalileoMozjsGlueAbi_140_12_29";
+const GALILEO_GLUE_RELEASE_TAG: &str = "galileo-mozjs-glue-abi-140.12.29";
 
 /// The version of moztools we expect.
 #[cfg(windows)]

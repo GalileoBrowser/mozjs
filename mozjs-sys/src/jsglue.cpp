@@ -27,6 +27,8 @@
 #include "js/Principals.h"
 #include "js/Promise.h"
 #include "js/Proxy.h"
+#include "js/Realm.h"
+#include "js/RealmOptions.h"
 #include "js/RegExp.h"
 #include "js/ScalarType.h"
 #include "js/StructuredClone.h"
@@ -1181,7 +1183,20 @@ struct DispatchablePointer {
 // The Galileo ABI sentinel is deliberately a link-time symbol rather than a
 // header-only constant. A consumer built with these bindings cannot silently
 // link an upstream libjsglue archive that predates the Galileo entry points.
-uint32_t GalileoMozjsGlueAbi_140_12_2() { return 0x008C0C02; }
+uint32_t GalileoMozjsGlueAbi_140_12_29() { return 0x008C0C1D; }
+
+// Query an object's immutable realm policy without invoking script or unwrapping it.
+bool Servo_UsesCompactNativeFunctionSource(JSObject* object);
+
+#ifndef RUST_BINDGEN
+bool Servo_UsesCompactNativeFunctionSource(JSObject* object) {
+  if (!object) {
+    return false;
+  }
+  JS::Realm* realm = JS::GetObjectRealmOrNull(object);
+  return realm && JS::RealmCreationOptionsRef(realm).compactNativeFunctionSource();
+}
+#endif
 
 // These opaque frontend objects contain no live JS heap values. The embedding
 // owns them exclusively and may move them between threads, but must not access

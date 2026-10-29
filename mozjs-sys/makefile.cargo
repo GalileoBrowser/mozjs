@@ -9,6 +9,7 @@ CONFIGURE_FLAGS := \
 	--disable-tests \
 	--disable-export-js \
 	--disable-shared-js \
+	--enable-explicit-resource-management \
 	--build-backends=RecursiveMake
 
 ifeq (,$(CARGO_FEATURE_JIT))

@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.29
+# Galileo SpiderMonkey glue ABI 140.12.30
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_29` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_30` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.29
+release tag: galileo-mozjs-glue-abi-140.12.30
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.29`.
+   `galileo-mozjs-glue-abi-140.12.30`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -105,3 +105,16 @@ uses internal function names, covers bound functions and callable proxies, and
 retains authored function source. Embedders select the policy before creating a
 realm; Firefox-style serialization is the default. The existing ownership,
 frontend, WebAssembly and isolated-realm bridges remain part of the same ABI.
+
+## Native Explicit Resource Management
+
+ABI 140.12.30 compiles Explicit Resource Management into the release engine and
+enables its runtime preference. The native DisposableStack, AsyncDisposableStack,
+SuppressedError, well-known disposal symbols, iterator disposal and using/await-using
+syntax are one feature configuration. No global Nightly build switch is enabled.
+The ABI advance prevents mixing archives/bindings built with different generated
+enums and feature-dependent layouts. Embedders must also include this ABI identity
+in their script/optimized-code cache build ID and pass real byte pointers to its
+build-ID callback; a constant unrelated identity is insufficient across feature
+changes. Native engine tests qualify the actual constructors, disposal and parser;
+full asynchronous behavior is additionally verified in browser/worker realms.

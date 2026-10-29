@@ -1183,7 +1183,7 @@ struct DispatchablePointer {
 // The Galileo ABI sentinel is deliberately a link-time symbol rather than a
 // header-only constant. A consumer built with these bindings cannot silently
 // link an upstream libjsglue archive that predates the Galileo entry points.
-uint32_t GalileoMozjsGlueAbi_140_12_29() { return 0x008C0C1D; }
+uint32_t GalileoMozjsGlueAbi_140_12_30() { return 0x008C0C1E; }
 
 // Query an object's immutable realm policy without invoking script or unwrapping it.
 bool Servo_UsesCompactNativeFunctionSource(JSObject* object);

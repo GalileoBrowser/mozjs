@@ -16,21 +16,21 @@ pub type EncodedStringCallback = unsafe extern "C" fn(*const core::ffi::c_char);
 
 /// Stable Galileo SpiderMonkey glue ABI carried by both the generated Rust
 /// bindings and `libjsglue`.
-pub const GALILEO_MOZJS_GLUE_ABI: u32 = 0x008C0C1D;
+pub const GALILEO_MOZJS_GLUE_ABI: u32 = 0x008C0C1E;
 
 // Keep an unconditional relocation to the versioned C symbol in every
 // mozjs_sys build. A stale archive with newer generated bindings therefore
 // fails at link time instead of reaching a latent ownership or JIT ABI bug.
 #[used]
 static GALILEO_MOZJS_GLUE_ABI_LINK_SENTINEL: unsafe extern "C" fn() -> u32 =
-    GalileoMozjsGlueAbi_140_12_29;
+    GalileoMozjsGlueAbi_140_12_30;
 
 /// Returns the ABI exported by the linked `libjsglue` archive.
 #[inline]
 pub fn galileo_mozjs_glue_abi() -> u32 {
     // SAFETY: the function takes no arguments and is supplied by the matching
     // `libjsglue` translation unit. The versioned symbol is the ABI contract.
-    unsafe { GalileoMozjsGlueAbi_140_12_29() }
+    unsafe { GalileoMozjsGlueAbi_140_12_30() }
 }
 
 // manual glue stuff

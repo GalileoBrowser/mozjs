@@ -256,6 +256,9 @@ enum class ImmutableScriptFlagsEnum : uint32_t {
   // Whether this is a self-hosted function that uses the ArgumentsLength or
   // GetArgument intrinsic.
   UsesArgumentsIntrinsics = 1 << 30,
+  // An engine-owned forwarding function whose implementation frame is not a
+  // public call boundary. Compiler metadata, independent of names or inlining.
+  IsStackTransparent = 1U << 31,
 };
 
 enum class MutableScriptFlagsEnum : uint32_t {

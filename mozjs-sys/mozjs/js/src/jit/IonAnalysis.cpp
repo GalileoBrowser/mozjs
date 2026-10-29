@@ -9,6 +9,11 @@
 #include "mozilla/HashFunctions.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <utility>  // for ::std::pair
 
 #include "jit/AliasAnalysis.h"
@@ -4208,6 +4213,182 @@ bool jit::EliminateRedundantGCBarriers(MIRGraph& graph) {
     }
   }
 
+  return true;
+}
+
+static bool IsPrimitiveSlotValue(MDefinition* value) {
+  if (value->isBox()) {
+    value = value->toBox()->input();
+  }
+  switch (value->type()) {
+    case MIRType::Undefined:
+    case MIRType::Null:
+    case MIRType::Boolean:
+    case MIRType::Int32:
+    case MIRType::Double:
+    case MIRType::Float32:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool jit::EliminatePrimitiveSlotPreBarriers(const MIRGenerator* mir,
+                                            MIRGraph& graph) {
+  static const bool enabled = [] {
+    const char* value = std::getenv("GALILEO_PRIMITIVE_SLOT_BARRIERS");
+    return !value || value[0] != '0';
+  }();
+  static const bool trace = [] {
+    const char* value = std::getenv("GALILEO_PRIMITIVE_SLOT_TRACE");
+    return value && value[0] == '1';
+  }();
+  if (!enabled && !trace) {
+    return true;
+  }
+
+  // Each fact is local to this basic block. A typed load proves the OLD slot
+  // value contains no GC pointer; the type of the NEW value alone is not a
+  // reason to omit a pre-barrier. Any intervening possibly-aliasing write
+  // invalidates the fact, including calls with AliasSet::Any. Never carry a
+  // fact through a CFG edge, OSR entry, loop backedge, or a different SSA base.
+  // The bounded working set uses only compiler-arena pointers and no GC edges.
+  struct SlotFact {
+    MDefinition* base = nullptr;
+    MDefinition* load = nullptr;
+    size_t slot = 0;
+    uint32_t alias = 0;
+    bool primitive = false;
+  };
+  uint64_t stores = 0, proven = 0, fixed = 0, dynamic = 0;
+  uint64_t invalidated = 0, evicted = 0;
+  for (MBasicBlockIterator block(graph.begin()); block != graph.end();
+       block++) {
+    if (mir->shouldCancel("Primitive Slot Pre-Barrier Elimination")) {
+      return false;
+    }
+    std::array<SlotFact, 16> facts{};
+    size_t next = 0;
+    auto find = [&](MDefinition* base, size_t slot,
+                    uint32_t alias) -> SlotFact* {
+      for (auto& fact : facts) {
+        if (fact.base == base && fact.slot == slot && fact.alias == alias) {
+          return &fact;
+        }
+      }
+      return nullptr;
+    };
+    auto remember = [&](MDefinition* base, size_t slot, uint32_t alias,
+                        MDefinition* load, bool primitive) {
+      SlotFact* fact = find(base, slot, alias);
+      if (!fact) {
+        fact = &facts[next];
+        next = (next + 1) % facts.size();
+        evicted += fact->base != nullptr;
+        *fact = SlotFact{};
+      }
+      fact->base = base;
+      fact->slot = slot;
+      fact->alias = alias;
+      fact->load = load;
+      fact->primitive |= primitive;
+    };
+
+    for (MInstructionIterator iter(block->begin()); iter != block->end();
+         iter++) {
+      MInstruction* ins = *iter;
+      MDefinition* storeBase = nullptr;
+      MDefinition* storeValue = nullptr;
+      size_t storeSlot = 0;
+      uint32_t storeAlias = 0;
+      if (ins->isStoreFixedSlot()) {
+        auto* store = ins->toStoreFixedSlot();
+        storeBase = store->object();
+        storeValue = store->value();
+        storeSlot = store->slot();
+        storeAlias = AliasSet::FixedSlot;
+        stores += store->needsBarrier();
+        auto* fact = find(storeBase, storeSlot, storeAlias);
+        if (store->needsBarrier() && fact && fact->primitive) {
+          proven++;
+          if (enabled) {
+            store->setNeedsBarrier(false);
+            fixed++;
+          }
+        }
+      } else if (ins->isStoreDynamicSlot()) {
+        auto* store = ins->toStoreDynamicSlot();
+        storeBase = store->slots();
+        storeValue = store->value();
+        storeSlot = store->slot();
+        storeAlias = AliasSet::DynamicSlot;
+        stores += store->needsBarrier();
+        auto* fact = find(storeBase, storeSlot, storeAlias);
+        if (store->needsBarrier() && fact && fact->primitive) {
+          proven++;
+          if (enabled) {
+            store->setNeedsBarrier(false);
+            dynamic++;
+          }
+        }
+      }
+
+      AliasSet aliases = ins->getAliasSet();
+      if (aliases.isStore()) {
+        for (auto& fact : facts) {
+          if (fact.base && (aliases.flags() & fact.alias)) {
+            fact = SlotFact{};
+            invalidated++;
+          }
+        }
+      }
+      // The store itself establishes the new value only after invalidation.
+      if (storeBase && IsPrimitiveSlotValue(storeValue)) {
+        remember(storeBase, storeSlot, storeAlias, nullptr, true);
+      }
+
+      if (ins->isLoadFixedSlot()) {
+        auto* load = ins->toLoadFixedSlot();
+        remember(load->object(), load->slot(), AliasSet::FixedSlot, load,
+                 IsPrimitiveSlotValue(load));
+      } else if (ins->isLoadDynamicSlot()) {
+        auto* load = ins->toLoadDynamicSlot();
+        remember(load->slots(), load->slot(), AliasSet::DynamicSlot, load,
+                 IsPrimitiveSlotValue(load));
+      } else if (ins->isLoadFixedSlotAndUnbox()) {
+        auto* load = ins->toLoadFixedSlotAndUnbox();
+        remember(load->object(), load->slot(), AliasSet::FixedSlot, load,
+                 IsPrimitiveSlotValue(load));
+      } else if (ins->isLoadDynamicSlotAndUnbox()) {
+        auto* load = ins->toLoadDynamicSlotAndUnbox();
+        remember(load->slots(), load->slot(), AliasSet::DynamicSlot, load,
+                 IsPrimitiveSlotValue(load));
+      } else if (ins->isUnbox() && IsPrimitiveSlotValue(ins)) {
+        for (auto& fact : facts) {
+          if (fact.base && fact.load == ins->toUnbox()->input()) {
+            fact.primitive = true;
+          }
+        }
+      }
+    }
+  }
+  if (trace) {
+    static std::atomic<uint32_t> records{0};
+    uint32_t record = records.fetch_add(1, std::memory_order_relaxed);
+    if (record < 65536) {
+      double stamp = std::chrono::duration<double, std::milli>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+      std::fprintf(stderr,
+                   "[galileo primitive slots] at_unix_ms=%.6f enabled=%u "
+                   "stores=%llu proven=%llu fixed=%llu dynamic=%llu "
+                   "invalidated=%llu evicted=%llu record=%u\n",
+                   stamp, unsigned(enabled), (unsigned long long)stores,
+                   (unsigned long long)proven, (unsigned long long)fixed,
+                   (unsigned long long)dynamic, (unsigned long long)invalidated,
+                   (unsigned long long)evicted, record);
+    }
+  }
   return true;
 }
 

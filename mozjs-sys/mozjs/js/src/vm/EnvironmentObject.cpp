@@ -745,6 +745,7 @@ WithEnvironmentObject* WithEnvironmentObject::create(
   obj->initEnclosingEnvironment(enclosing);
   obj->initReservedSlot(OBJECT_SLOT, ObjectValue(*object));
   obj->initReservedSlot(THIS_SLOT, ObjectValue(*thisObj));
+  obj->initReservedSlot(IMPLICIT_THIS_SLOT, ObjectValue(*thisObj));
   if (scope) {
     MOZ_ASSERT(supportUnscopables == JS::SupportUnscopables::Yes,
                "with-statements must support Symbol.unscopables");
@@ -760,8 +761,13 @@ WithEnvironmentObject* WithEnvironmentObject::create(
 
 WithEnvironmentObject* WithEnvironmentObject::createNonSyntactic(
     JSContext* cx, HandleObject object, HandleObject enclosing,
-    JS::SupportUnscopables supportUnscopables) {
-  return create(cx, object, enclosing, nullptr, supportUnscopables);
+    JS::SupportUnscopables supportUnscopables, bool globalObjectEnvironment) {
+  auto* env = create(cx, object, enclosing, nullptr, supportUnscopables);
+  if (env && globalObjectEnvironment) {
+    MOZ_ASSERT(supportUnscopables == JS::SupportUnscopables::No);
+    env->setReservedSlot(IMPLICIT_THIS_SLOT, UndefinedValue());
+  }
+  return env;
 }
 
 static inline bool IsUnscopableDotName(JSContext* cx, HandleId id) {
@@ -983,8 +989,17 @@ NonSyntacticLexicalEnvironmentObject* js::CreateNonSyntacticEnvironmentChain(
   //
   // TODOshu: disallow the subscript loader from using non-distinguished
   // objects as dynamic scopes.
-  return ObjectRealm::get(env).getOrCreateNonSyntacticLexicalEnvironment(cx,
-                                                                         env);
+  auto* lexical = ObjectRealm::get(env).getOrCreateNonSyntacticLexicalEnvironment(
+      cx, env);
+  if (lexical &&
+      (lexical->enclosingEnvironment().is<WithEnvironmentObject>() &&
+       lexical->enclosingEnvironment()
+           .as<WithEnvironmentObject>()
+           .isGlobalObjectEnvironment()) != envChain.isGlobalObjectEnvironment()) {
+    JS_ReportErrorASCII(cx, "cannot change an object's environment binding policy");
+    return nullptr;
+  }
+  return lexical;
 }
 
 /*****************************************************************************/
@@ -3489,6 +3504,10 @@ WithEnvironmentObject* js::CreateObjectsForEnvironmentChain(
     JSContext* cx, const JS::EnvironmentChain& chain,
     HandleObject terminatingEnv) {
   MOZ_ASSERT(!chain.empty());
+  if (chain.isGlobalObjectEnvironment() && chain.length() != 1) {
+    JS_ReportErrorASCII(cx, "a global object environment requires one target");
+    return nullptr;
+  }
 
 #ifdef DEBUG
   for (size_t i = 0; i < chain.length(); ++i) {
@@ -3503,7 +3522,8 @@ WithEnvironmentObject* js::CreateObjectsForEnvironmentChain(
   RootedObject enclosingEnv(cx, terminatingEnv);
   for (size_t i = chain.length(); i > 0;) {
     withEnv = WithEnvironmentObject::createNonSyntactic(
-        cx, chain.chain()[--i], enclosingEnv, chain.supportUnscopables());
+        cx, chain.chain()[--i], enclosingEnv, chain.supportUnscopables(),
+        chain.isGlobalObjectEnvironment());
     if (!withEnv) {
       return nullptr;
     }
@@ -3769,7 +3789,7 @@ static void ReportCannotDeclareGlobalBinding(JSContext* cx,
 }
 
 [[nodiscard]] static bool CheckCanDeclareGlobalBinding(
-    JSContext* cx, Handle<GlobalObject*> global, Handle<PropertyName*> name,
+    JSContext* cx, HandleObject global, Handle<PropertyName*> name,
     bool isFunction) {
   RootedId id(cx, NameToId(name));
   Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
@@ -3784,7 +3804,11 @@ static void ReportCannotDeclareGlobalBinding(JSContext* cx,
   if (desc.isNothing()) {
     // 8.1.14.15 step 6.
     // 8.1.14.16 step 5.
-    if (global->isExtensible()) {
+    bool extensible;
+    if (!IsExtensible(cx, global, &extensible)) {
+      return false;
+    }
+    if (extensible) {
       return true;
     }
 
@@ -3832,6 +3856,22 @@ static bool InitGlobalOrEvalDeclarations(
 
     switch (bi.kind()) {
       case BindingKind::Var: {
+        if (varObj->is<WithEnvironmentObject>() &&
+            varObj->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+          RootedObject global(cx, &varObj->as<WithEnvironmentObject>().object());
+          RootedId id(cx, NameToId(name));
+          bool own;
+          if (!HasOwnProperty(cx, global, id, &own)) {
+            return false;
+          }
+          // CreateGlobalVarBinding preserves an existing own property's
+          // attributes, but an inherited property is not a declared binding.
+          if (!own && !DefineDataProperty(cx, global, id, UndefinedHandleValue,
+                                         attrs)) {
+            return false;
+          }
+          break;
+        }
         PropertyResult prop;
         RootedObject obj2(cx);
         if (!LookupProperty(cx, varObj, name, &obj2, &prop)) {
@@ -3992,9 +4032,15 @@ static bool InitHoistedFunctionDeclarations(JSContext* cx, HandleScript script,
     //
     // Check that global functions and vars may be declared.
     if (varObj->is<GlobalObject>()) {
-      Handle<GlobalObject*> global = varObj.as<GlobalObject>();
-      if (!CheckCanDeclareGlobalBinding(cx, global, name,
+      if (!CheckCanDeclareGlobalBinding(cx, varObj, name,
                                         bi.isTopLevelFunction())) {
+        return false;
+      }
+    } else if (varObj->is<WithEnvironmentObject>() &&
+               varObj->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+      RootedObject global(cx, &varObj->as<WithEnvironmentObject>().object());
+      if (!CheckCanDeclareGlobalBinding(cx, global, name,
+                                       bi.isTopLevelFunction())) {
         return false;
       }
     }

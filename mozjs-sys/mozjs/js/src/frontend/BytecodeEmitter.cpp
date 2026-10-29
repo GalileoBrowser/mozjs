@@ -7943,6 +7943,17 @@ bool BytecodeEmitter::emitSelfHostedSetIsInlinableLargeFunction(
   return emit1(JSOp::Undefined);
 }
 
+bool BytecodeEmitter::emitSelfHostedSetIsStackTransparent(CallNode* callNode) {
+#ifdef DEBUG
+  ListNode* argsList = callNode->args();
+  MOZ_ASSERT(argsList->count() == 1);
+  assertSelfHostedExpectedTopLevel(argsList->head());
+#endif
+  MOZ_ASSERT(prevSelfHostedTopLevelFunction->isInitialCompilation);
+  prevSelfHostedTopLevelFunction->setIsStackTransparent();
+  return emit1(JSOp::Undefined);
+}
+
 bool BytecodeEmitter::emitSelfHostedSetCanonicalName(CallNode* callNode) {
   ListNode* argsList = callNode->args();
 
@@ -8574,6 +8585,9 @@ bool BytecodeEmitter::emitCallOrNew(CallNode* callNode, ValueUsage valueUsage) {
     }
     if (calleeName == TaggedParserAtomIndex::WellKnown::SetCanonicalName()) {
       return emitSelfHostedSetCanonicalName(callNode);
+    }
+    if (calleeName == TaggedParserAtomIndex::WellKnown::SetIsStackTransparent()) {
+      return emitSelfHostedSetIsStackTransparent(callNode);
     }
     if (calleeName == TaggedParserAtomIndex::WellKnown::IsNullOrUndefined()) {
       return emitSelfHostedIsNullOrUndefined(callNode);
@@ -9568,34 +9582,13 @@ bool BytecodeEmitter::emitPropertyList(ListNode* obj, PropertyEmitter& pe,
             //      [stack] CTOR? OBJ CTOR? KEY VAL
             return false;
           }
-        } else if (key->isKind(ParseNodeKind::ComputedName) &&
-                   (key->as<UnaryNode>().kid()->isKind(
-                        ParseNodeKind::NumberExpr) ||
-                    key->as<UnaryNode>().kid()->isKind(
-                        ParseNodeKind::StringExpr)) &&
-                   accessorType == AccessorType::None) {
-          ParseNode* keyKid = key->as<UnaryNode>().kid();
-          if (keyKid->isKind(ParseNodeKind::NumberExpr)) {
-            auto keyAtom =
-                keyKid->as<NumericLiteral>().toAtom(fc, parserAtoms());
-            if (!keyAtom) {
-              return false;
-            }
-            if (!emitAnonymousFunctionWithName(propVal, keyAtom)) {
-              //    [stack] CTOR? OBJ CTOR? KEY VAL
-              return false;
-            }
-          } else {
-            MOZ_ASSERT(keyKid->isKind(ParseNodeKind::StringExpr));
-            auto keyAtom = keyKid->as<NameNode>().atom();
-            if (!emitAnonymousFunctionWithName(propVal, keyAtom)) {
-              //    [stack] CTOR? OBJ CTOR? KEY VAL
-              return false;
-            }
-          }
         } else {
           // Either a proper computed property name or a synthetic computed
-          // property name for BigInt keys.
+          // property name for BigInt keys. Even a literal key is evaluated
+          // here: use the ordinary runtime SetFunctionName mechanism so its
+          // inferred instance name is not confused with compiler source
+          // identity. The evaluated key stays on the stack and is not read or
+          // converted again; this preserves normal name and side-effect order.
           MOZ_ASSERT(key->isKind(ParseNodeKind::ComputedName));
 
           FunctionPrefixKind prefix =

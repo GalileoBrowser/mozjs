@@ -37,7 +37,7 @@ class ErrorObject : public NativeObject {
                    UniquePtr<JSErrorReport> errorReport, HandleString fileName,
                    HandleObject stack, uint32_t sourceId, uint32_t lineNumber,
                    JS::ColumnNumberOneOrigin columnNumber, HandleString message,
-                   Handle<mozilla::Maybe<JS::Value>> cause);
+                   Handle<mozilla::Maybe<JS::Value>> cause, bool stackEnabled);
 
   static const ClassSpec classSpecs[JSEXN_ERROR_LIMIT];
   static const JSClass protoClasses[JSEXN_ERROR_LIMIT];
@@ -48,7 +48,11 @@ class ErrorObject : public NativeObject {
   static const uint32_t FILENAME_SLOT = ERROR_REPORT_SLOT + 1;
   static const uint32_t LINENUMBER_SLOT = FILENAME_SLOT + 1;
   static const uint32_t COLUMNNUMBER_SLOT = LINENUMBER_SLOT + 1;
-  static const uint32_t MESSAGE_SLOT = COLUMNNUMBER_SLOT + 1;
+  // A common-policy own stack accessor must precede message/cause in both
+  // property order and slot order. Mixing a dynamic accessor slot with later
+  // lower reserved slots violates SharedPropMap's monotonic slot invariant.
+  static const uint32_t STACK_ACCESSOR_SLOT = COLUMNNUMBER_SLOT + 1;
+  static const uint32_t MESSAGE_SLOT = STACK_ACCESSOR_SLOT + 1;
   static const uint32_t CAUSE_SLOT = MESSAGE_SLOT + 1;
   static const uint32_t SOURCEID_SLOT = CAUSE_SLOT + 1;
 
@@ -81,7 +85,8 @@ class ErrorObject : public NativeObject {
                              UniquePtr<JSErrorReport> report,
                              HandleString message,
                              Handle<mozilla::Maybe<JS::Value>> cause,
-                             HandleObject proto = nullptr);
+                             HandleObject proto = nullptr,
+                             bool stackEnabled = true);
 
   /*
    * Assign the initial error shape to the empty object.  (This shape does
@@ -90,6 +95,11 @@ class ErrorObject : public NativeObject {
    */
   static SharedShape* assignInitialShape(JSContext* cx,
                                          Handle<ErrorObject*> obj);
+
+  // Initial native Error construction only; recapture on an existing Error
+  // or arbitrary authored receiver goes through normal DefineProperty.
+  static bool initStackAccessor(JSContext* cx, Handle<ErrorObject*> obj,
+                                HandleObject getter, HandleObject setter);
 
   JSExnType type() const {
     MOZ_ASSERT(isErrorClass(getClass()));

@@ -1080,11 +1080,15 @@ class WithEnvironmentObject : public EnvironmentObject {
   // For non-syntactic with-environments it stores a boolean indicating whether
   // we need to look up and use Symbol.unscopables.
   static constexpr uint32_t SCOPE_OR_SUPPORT_UNSCOPABLES_SLOT = 3;
+  // ObjectValue for ordinary `with` bindings; UndefinedValue for an
+  // embedding-owned global object environment. Both the interpreter and JIT
+  // read this slot when forming the receiver of an identifier call.
+  static constexpr uint32_t IMPLICIT_THIS_SLOT = 4;
 
  public:
   static const JSClass class_;
 
-  static constexpr uint32_t RESERVED_SLOTS = 4;
+  static constexpr uint32_t RESERVED_SLOTS = 5;
   static constexpr ObjectFlags OBJECT_FLAGS = {};
 
   static WithEnvironmentObject* create(
@@ -1092,13 +1096,19 @@ class WithEnvironmentObject : public EnvironmentObject {
       Handle<WithScope*> scope, JS::SupportUnscopables supportUnscopables);
   static WithEnvironmentObject* createNonSyntactic(
       JSContext* cx, HandleObject object, HandleObject enclosing,
-      JS::SupportUnscopables supportUnscopables);
+      JS::SupportUnscopables supportUnscopables,
+      bool globalObjectEnvironment = false);
 
   /* Return the 'o' in 'with (o)'. */
   JSObject& object() const;
 
   /* Return object for GetThisValue. */
   JSObject* withThis() const;
+
+  Value implicitThis() const { return getReservedSlot(IMPLICIT_THIS_SLOT); }
+  bool isGlobalObjectEnvironment() const {
+    return implicitThis().isUndefined();
+  }
 
   /*
    * Return whether this object is a syntactic with object.  If not, this is
@@ -1122,6 +1132,9 @@ class WithEnvironmentObject : public EnvironmentObject {
   // For JITs.
   static constexpr size_t offsetOfThisSlot() {
     return getFixedSlotOffset(THIS_SLOT);
+  }
+  static constexpr size_t offsetOfImplicitThisSlot() {
+    return getFixedSlotOffset(IMPLICIT_THIS_SLOT);
   }
 };
 

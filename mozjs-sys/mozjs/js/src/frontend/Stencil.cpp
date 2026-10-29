@@ -4569,6 +4569,9 @@ void js::DumpImmutableScriptFlags(js::JSONPrinter& json,
         case ImmutableScriptFlagsEnum::UsesArgumentsIntrinsics:
           json.value("UsesArgumentsIntrinsics");
           break;
+        case ImmutableScriptFlagsEnum::IsStackTransparent:
+          json.value("IsStackTransparent");
+          break;
         default:
           json.value("Unknown(%x)", i);
           break;

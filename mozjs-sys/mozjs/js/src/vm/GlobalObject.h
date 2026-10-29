@@ -215,6 +215,11 @@ class GlobalObjectData {
   GCPtr<PlainObject*> iterResultTemplate;
   GCPtr<PlainObject*> iterResultWithoutPrototypeTemplate;
 
+  // Shared own-stack accessor functions, lazily allocated once per global.
+  GCPtr<JSFunction*> nativeErrorStackGetter;
+  GCPtr<JSFunction*> nativeErrorStackSetter;
+  GCPtr<PlainObject*> nativeCallSitePrototype;
+
   // Lazily initialized script source object to use for scripts cloned from the
   // self-hosting stencil.
   GCPtr<ScriptSourceObject*> selfHostingScriptSource;
@@ -280,6 +285,14 @@ class GlobalObject : public NativeObject {
 
   GlobalObjectData& data() { return *maybeData(); }
   const GlobalObjectData& data() const { return *maybeData(); }
+
+  friend bool InstallNativeErrorStack(JSContext* cx, JS::HandleObject receiver,
+                                      JS::HandleObject stack, bool enabled,
+                                      JS::HandleString originalMessage,
+                                      bool preferOriginalMessage,
+                                      bool initializingError);
+  friend bool BuildNativeCallSites(JSContext* cx, JS::HandleObject stack,
+                                  JS::MutableHandleObject result);
 
   void initBuiltinProto(ProtoKind kind, JSObject* proto) {
     MOZ_ASSERT(proto);

@@ -5869,6 +5869,10 @@ void CodeGenerator::emitCallNative(LCallIns* call, JSNative native,
   masm.enterFakeExitFrameForNative(argContextReg, tempReg,
                                    call->mir()->isConstructing());
 
+  masm.pushValue(Address(argVpReg, sizeof(Value)));
+  masm.pushValue(Address(argVpReg, 0));
+  masm.setFramePushed(masm.framePushed() + NativeExitFrameLayout::InvocationSnapshotSize);
+
   markSafepointAt(safepointOffset, call);
 
   // Construct and execute call.
@@ -6448,6 +6452,9 @@ void JitRuntime::generateIonGenericCallNativeFunction(MacroAssembler& masm,
   masm.push(FramePointer);
   masm.moveStackPtrTo(FramePointer);
   masm.enterFakeExitFrameForNative(contextReg, scratch, isConstructing);
+
+  masm.pushValue(Address(scratch2, sizeof(Value)));
+  masm.pushValue(Address(scratch2, 0));
 
   masm.setupUnalignedABICall(scratch);
   masm.passABIArg(contextReg);  // cx

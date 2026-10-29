@@ -161,7 +161,79 @@ unsafe impl<T: Traceable> Traceable for UnsafeCell<T> {
 unsafe impl<T: Traceable> Traceable for RefCell<T> {
     #[inline]
     unsafe fn trace(&self, trc: *mut JSTracer) {
-        (*self).borrow().trace(trc);
+        // GC pauses the mutator, but several marking workers can reach the
+        // same cell through shared owners. Do not update its non-atomic borrow
+        // counter while tracing. A live mutable borrow still rejects access,
+        // and the payload retains its normal tracing of every nested edge.
+        let value = unsafe { self.try_borrow_unguarded() }
+            .expect("RefCell is mutably borrowed during GC tracing");
+        unsafe { value.trace(trc) };
+    }
+}
+
+#[cfg(test)]
+mod refcell_trace_tests {
+    use super::{JSTracer, RefCell, Traceable};
+    use std::ptr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+
+    struct Visited(AtomicUsize);
+
+    #[inline(never)]
+    fn visit(counter: &AtomicUsize) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe impl Traceable for Visited {
+        unsafe fn trace(&self, _: *mut JSTracer) {
+            // Real tracing delegates to an opaque collector callback. Keep
+            // that call boundary so optimization cannot erase the borrow.
+            let visitor = std::hint::black_box(visit as fn(&AtomicUsize));
+            visitor(&self.0);
+        }
+    }
+
+    struct PausedField(RefCell<Visited>);
+
+    // This test models a stopped mutator. Workers only trace the field;
+    // the visit observer is atomic and ordinary mutation resumes after join.
+    unsafe impl Sync for PausedField {}
+
+    #[test]
+    fn parallel_trace_preserves_live_read_and_later_mutation() {
+        let field = PausedField(RefCell::new(Visited(AtomicUsize::new(0))));
+        let existing_read = field.0.borrow();
+        let start = Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let field = &field;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..100_000 {
+                        // The payload has no JS edges and needs no tracer.
+                        unsafe { field.0.trace(ptr::null_mut()) };
+                    }
+                });
+            }
+        });
+        assert_eq!(existing_read.0.load(Ordering::Relaxed), 800_000);
+        drop(existing_read);
+        assert!(field.0.try_borrow_mut().is_ok());
+    }
+
+    #[test]
+    fn trace_rejects_a_live_mutable_borrow_before_visiting_payload() {
+        let field = RefCell::new(Visited(AtomicUsize::new(0)));
+        let mutable = field.borrow_mut();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            field.trace(ptr::null_mut());
+        }));
+        assert!(result.is_err());
+        assert_eq!(mutable.0.load(Ordering::Relaxed), 0);
+        drop(mutable);
+        assert!(field.try_borrow_mut().is_ok());
     }
 }
 

@@ -232,6 +232,17 @@ inline bool SetNameOperation(JSContext* cx, JSScript* script, jsbytecode* pc,
   ObjectOpResult result;
   RootedId id(cx, NameToId(name));
   RootedValue receiver(cx, ObjectValue(*env));
+  if (strict && env->is<WithEnvironmentObject>() &&
+      env->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+    bool found;
+    if (!HasProperty(cx, env, id, &found)) {
+      return false;
+    }
+    if (!found) {
+      ReportRuntimeLexicalError(cx, JSMSG_UNDECLARED_VAR, name);
+      return false;
+    }
+  }
   if (env->isUnqualifiedVarObj()) {
     Rooted<NativeObject*> varobj(cx);
     if (env->is<DebugEnvironmentProxy>()) {

@@ -49,6 +49,7 @@
 #include "vm/FrameIter.h"    // js::NonBuiltinFrameIter
 #include "vm/JSAtomUtils.h"  // ClassName
 #include "vm/JSContext.h"
+#include "vm/NativeBuiltinMetadata.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 #include "vm/Realm.h"
@@ -221,9 +222,15 @@ struct SuppressErrorsGuard {
   ~SuppressErrorsGuard() { JS::SetWarningReporter(cx, prevReporter); }
 };
 
-bool js::CaptureStack(JSContext* cx, MutableHandleObject stack) {
+bool js::CaptureStack(JSContext* cx, MutableHandleObject stack, uint32_t limit,
+                      const JS::Value* skipNativeInvocation) {
+  if (limit == 0) {
+    stack.set(nullptr);
+    return true;
+  }
+  AutoNativeBuiltinStackCapture capture(cx, skipNativeInvocation);
   return CaptureCurrentStack(
-      cx, stack, JS::StackCapture(JS::MaxFrames(MAX_REPORTED_STACK_DEPTH)));
+      cx, stack, JS::StackCapture(JS::MaxFrames(limit)));
 }
 
 JSString* js::ComputeStackString(JSContext* cx) {
@@ -338,8 +345,9 @@ bool js::ErrorToException(JSContext* cx, JSErrorReport* reportp,
   // Error reports don't provide a |cause|, so we default to |Nothing| here.
   auto cause = JS::NothingHandleValue;
 
+  mozilla::Maybe<uint32_t> limit = GetStackTraceLimit(cx);
   RootedObject stack(cx);
-  if (!CaptureStack(cx, &stack)) {
+  if (!CaptureStack(cx, &stack, limit.valueOr(0))) {
     return false;
   }
 
@@ -348,10 +356,18 @@ bool js::ErrorToException(JSContext* cx, JSErrorReport* reportp,
     return false;
   }
 
-  ErrorObject* errObject =
-      ErrorObject::create(cx, exnType, stack, fileName, sourceId, lineNumber,
-                          columnNumber, std::move(report), messageStr, cause);
+  Rooted<ErrorObject*> errObject(
+      cx, ErrorObject::create(cx, exnType, stack, fileName, sourceId, lineNumber,
+                             columnNumber, std::move(report), messageStr, cause,
+                             nullptr, limit.isSome()));
   if (!errObject) {
+    return false;
+  }
+
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      limit.isNothing() &&
+      !DefineDataProperty(cx, errObject, cx->names().stack,
+                          JS::UndefinedHandleValue)) {
     return false;
   }
 

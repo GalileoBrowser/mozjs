@@ -12,6 +12,9 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 #include "jsexn.h"
@@ -39,11 +42,14 @@
 #include "util/StringBuilder.h"
 #include "vm/ErrorReporting.h"
 #include "vm/GlobalObject.h"
+#include "vm/GetterSetter.h"
 #include "vm/Iteration.h"
 #include "vm/JSAtomUtils.h"  // ClassName
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
 #include "vm/NativeObject.h"
+#include "vm/NativeErrorStack.h"
+#include "vm/NativeBuiltinMetadata.h"
 #include "vm/ObjectOperations.h"
 #include "vm/SavedStacks.h"
 #include "vm/SelfHosting.h"
@@ -101,6 +107,8 @@ static const JSFunctionSpec error_methods[] = {
 static bool exn_isError(JSContext* cx, unsigned argc, Value* vp);
 
 static bool exn_captureStackTrace(JSContext* cx, unsigned argc, Value* vp);
+
+static bool exn_finishInit(JSContext* cx, HandleObject ctor, HandleObject proto);
 
 static const JSFunctionSpec error_static_methods[] = {
     JS_FN("isError", exn_isError, 1, 0),
@@ -165,7 +173,8 @@ IMPLEMENT_NATIVE_ERROR_PROPERTIES(SuspendError)
 
 const ClassSpec ErrorObject::classSpecs[JSEXN_ERROR_LIMIT] = {
     {ErrorObject::createConstructor, ErrorObject::createProto,
-     error_static_methods, nullptr, error_methods, error_properties},
+     error_static_methods, nullptr, error_methods, error_properties,
+     exn_finishInit},
 
     IMPLEMENT_NATIVE_ERROR_SPEC(InternalError),
     IMPLEMENT_NATIVE_ERROR_SPEC(AggregateError),
@@ -266,6 +275,11 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
   // non-standard fileName and lineNumber arguments when we have an options
   // object argument.
   bool hasOptions = args.get(messageArg + 1).isObject();
+  // Only the explicit Gecko policy accepts the non-standard location
+  // arguments. Other realms must not convert ignored extra values: those
+  // conversions can execute authored code or wrongly throw for Symbols.
+  const bool hasLegacyLocationArguments =
+      !cx->realm()->creationOptions().v8ErrorStackLimits() && !hasOptions;
 
   Rooted<mozilla::Maybe<Value>> cause(cx, mozilla::Nothing());
   if (hasOptions) {
@@ -290,7 +304,7 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
 
   RootedString fileName(cx);
   uint32_t sourceId = 0;
-  if (!hasOptions && args.length() > messageArg + 1) {
+  if (hasLegacyLocationArguments && args.length() > messageArg + 1) {
     fileName = ToString<CanGC>(cx, args[messageArg + 1]);
   } else {
     fileName = cx->runtime()->emptyString;
@@ -310,7 +324,7 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
 
   uint32_t lineNumber;
   JS::ColumnNumberOneOrigin columnNumber;
-  if (!hasOptions && args.length() > messageArg + 2) {
+  if (hasLegacyLocationArguments && args.length() > messageArg + 2) {
     if (!ToUint32(cx, args[messageArg + 2], &lineNumber)) {
       return nullptr;
     }
@@ -320,13 +334,25 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
     columnNumber = JS::ColumnNumberOneOrigin(tmp.oneOriginValue());
   }
 
+  mozilla::Maybe<uint32_t> limit = GetStackTraceLimit(cx);
   RootedObject stack(cx);
-  if (!CaptureStack(cx, &stack)) {
+  if (!CaptureStack(cx, &stack, limit.valueOr(0), args.base())) {
     return nullptr;
   }
 
-  return ErrorObject::create(cx, exnType, stack, fileName, sourceId, lineNumber,
-                             columnNumber, nullptr, message, cause, proto);
+  Rooted<ErrorObject*> error(cx, ErrorObject::create(
+      cx, exnType, stack, fileName, sourceId, lineNumber, columnNumber, nullptr,
+      message, cause, proto, limit.isSome()));
+  if (!error) {
+    return nullptr;
+  }
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      limit.isNothing() &&
+      !DefineDataProperty(cx, error, cx->names().stack,
+                          JS::UndefinedHandleValue)) {
+    return nullptr;
+  }
+  return error.get();
 }
 
 static bool Error(JSContext* cx, unsigned argc, Value* vp) {
@@ -536,6 +562,8 @@ SharedShape* js::ErrorObject::assignInitialShape(JSContext* cx,
                                                  Handle<ErrorObject*> obj) {
   MOZ_ASSERT(obj->empty());
 
+  MOZ_ASSERT(!cx->realm()->creationOptions().v8ErrorStackLimits());
+
   constexpr PropertyFlags propFlags = {PropertyFlag::Configurable,
                                        PropertyFlag::Writable};
 
@@ -564,7 +592,8 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
                            uint32_t sourceId, uint32_t lineNumber,
                            JS::ColumnNumberOneOrigin columnNumber,
                            HandleString message,
-                           Handle<mozilla::Maybe<JS::Value>> cause) {
+                           Handle<mozilla::Maybe<JS::Value>> cause,
+                           bool stackEnabled) {
   MOZ_ASSERT(JSEXN_ERR <= type && type < JSEXN_ERROR_LIMIT);
   AssertObjectIsSavedFrameOrWrapper(cx, stack);
   cx->check(obj, stack);
@@ -572,7 +601,35 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   // Null out early in case of error, for exn_finalize's sake.
   obj->initReservedSlot(ERROR_REPORT_SLOT, PrivateValue(nullptr));
 
-  if (!SharedShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
+  // Common-policy Errors start with the ordinary empty native shape. The
+  // custom shape cache requires a non-empty shape and is only needed for
+  // Gecko's public legacy location properties. Both policies retain the
+  // real reserved diagnostic slots independently of their public shapes.
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      !SharedShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
+    return false;
+  }
+
+  // Keep the real private report location and captured frames, including
+  // while allocating the GC-traced native stack record below. Debugger/error
+  // reporting must not depend on public legacy location properties.
+  obj->initReservedSlot(STACK_SLOT, ObjectOrNullValue(stack));
+  obj->initReservedSlot(FILENAME_SLOT, StringValue(fileName));
+  obj->initReservedSlot(LINENUMBER_SLOT, Int32Value(lineNumber));
+  obj->initReservedSlot(COLUMNNUMBER_SLOT,
+                        Int32Value(columnNumber.oneOriginValue()));
+  obj->initReservedSlot(SOURCEID_SLOT, Int32Value(sourceId));
+  if (obj->mightBeWasmTrap()) {
+    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(obj->getClass()) > WASM_TRAP_SLOT);
+    obj->initReservedSlot(WASM_TRAP_SLOT, BooleanValue(false));
+  }
+
+  // Native stack is the first public own property under the common policy.
+  // Install its actual private record/accessors before message and cause, not
+  // a placeholder value or a later property-order rewrite.
+  if (cx->realm()->creationOptions().v8ErrorStackLimits() &&
+      !InstallNativeErrorStack(cx, obj, stack, stackEnabled, message, true,
+                               true)) {
     return false;
   }
 
@@ -601,12 +658,14 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
     }
   }
 
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().fileName))->slot() ==
-             FILENAME_SLOT);
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().lineNumber))->slot() ==
-             LINENUMBER_SLOT);
-  MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().columnNumber))->slot() ==
-             COLUMNNUMBER_SLOT);
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits()) {
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().fileName))->slot() ==
+               FILENAME_SLOT);
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().lineNumber))->slot() ==
+               LINENUMBER_SLOT);
+    MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().columnNumber))->slot() ==
+               COLUMNNUMBER_SLOT);
+  }
   MOZ_ASSERT_IF(
       message,
       obj->lookupPure(NameToId(cx->names().message))->slot() == MESSAGE_SLOT);
@@ -615,12 +674,7 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
       obj->lookupPure(NameToId(cx->names().cause))->slot() == CAUSE_SLOT);
 
   JSErrorReport* report = errorReport.release();
-  obj->initReservedSlot(STACK_SLOT, ObjectOrNullValue(stack));
   obj->setReservedSlot(ERROR_REPORT_SLOT, PrivateValue(report));
-  obj->initReservedSlot(FILENAME_SLOT, StringValue(fileName));
-  obj->initReservedSlot(LINENUMBER_SLOT, Int32Value(lineNumber));
-  obj->initReservedSlot(COLUMNNUMBER_SLOT,
-                        Int32Value(columnNumber.oneOriginValue()));
   if (message) {
     obj->initReservedSlot(MESSAGE_SLOT, StringValue(message));
   }
@@ -629,12 +683,26 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   } else {
     obj->initReservedSlot(CAUSE_SLOT, MagicValue(JS_ERROR_WITHOUT_CAUSE));
   }
-  obj->initReservedSlot(SOURCEID_SLOT, Int32Value(sourceId));
-  if (obj->mightBeWasmTrap()) {
-    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(obj->getClass()) > WASM_TRAP_SLOT);
-    obj->initReservedSlot(WASM_TRAP_SLOT, BooleanValue(false));
-  }
+  return true;
+}
 
+/* static */
+bool js::ErrorObject::initStackAccessor(JSContext* cx, Handle<ErrorObject*> obj,
+                                       HandleObject getter,
+                                       HandleObject setter) {
+  MOZ_ASSERT(cx->realm()->creationOptions().v8ErrorStackLimits());
+  MOZ_ASSERT(obj->empty());
+  Rooted<GetterSetter*> pair(cx, GetterSetter::create(cx, getter, setter));
+  if (!pair) {
+    return false;
+  }
+  constexpr PropertyFlags flags = {PropertyFlag::Configurable,
+                                    PropertyFlag::AccessorProperty};
+  if (!NativeObject::addPropertyInReservedSlot(
+          cx, obj, cx->names().stack, STACK_ACCESSOR_SLOT, flags)) {
+    return false;
+  }
+  obj->initReservedSlot(STACK_ACCESSOR_SLOT, PrivateGCThingValue(pair));
   return true;
 }
 
@@ -646,7 +714,8 @@ ErrorObject* js::ErrorObject::create(JSContext* cx, JSExnType errorType,
                                      UniquePtr<JSErrorReport> report,
                                      HandleString message,
                                      Handle<mozilla::Maybe<JS::Value>> cause,
-                                     HandleObject protoArg /* = nullptr */) {
+                                     HandleObject protoArg /* = nullptr */,
+                                     bool stackEnabled /* = true */) {
   AssertObjectIsSavedFrameOrWrapper(cx, stack);
 
   RootedObject proto(cx, protoArg);
@@ -670,10 +739,9 @@ ErrorObject* js::ErrorObject::create(JSContext* cx, JSExnType errorType,
 
   if (!ErrorObject::init(cx, errObject, errorType, std::move(report), fileName,
                          stack, sourceId, lineNumber, columnNumber, message,
-                         cause)) {
+                         cause, stackEnabled)) {
     return nullptr;
   }
-
   return errObject;
 }
 
@@ -725,40 +793,23 @@ JSErrorReport* js::ErrorObject::getOrCreateErrorReport(JSContext* cx) {
   return copy.release();
 }
 
+// Preserve the native non-V8 inherited receiver policy. Chrome-mode errors
+// have their separate own accessor/private record; changing that does not
+// authorize changing Firefox's prototype-chain stack receiver lookup.
 static bool FindErrorInstanceOrPrototype(JSContext* cx, HandleObject obj,
                                          MutableHandleObject result) {
-  // Walk up the prototype chain until we find an error object instance or
-  // prototype object. This allows code like:
-  //  Object.create(Error.prototype).stack
-  // or
-  //   function NYI() { }
-  //   NYI.prototype = new Error;
-  //   (new NYI).stack
-  // to continue returning stacks that are useless, but at least don't throw.
-
-  RootedObject curr(cx, obj);
-  RootedObject target(cx);
+  RootedObject curr(cx, obj), target(cx);
   do {
     target = CheckedUnwrapStatic(curr);
-    if (!target) {
-      ReportAccessDenied(cx);
-      return false;
-    }
+    if (!target) { ReportAccessDenied(cx); return false; }
     if (IsErrorProtoKey(StandardProtoKeyOrNull(target))) {
       result.set(target);
       return true;
     }
-
-    if (!GetPrototype(cx, curr, &curr)) {
-      return false;
-    }
+    if (!GetPrototype(cx, curr, &curr)) return false;
   } while (curr);
-
-  // We walked the whole prototype chain and did not find an Error
-  // object.
   JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                            JSMSG_INCOMPATIBLE_PROTO, "Error", "(get stack)",
-                            obj->getClass()->name);
+      JSMSG_INCOMPATIBLE_PROTO, "Error", "(get stack)", obj->getClass()->name);
   return false;
 }
 
@@ -1048,6 +1099,56 @@ static bool exn_isError(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
+static uint32_t DefaultStackTraceLimit(JSContext* cx) {
+  return cx->realm()->creationOptions().v8ErrorStackLimits()
+             ? 10
+             : uint32_t(MAX_REPORTED_STACK_DEPTH);
+}
+
+static bool exn_finishInit(JSContext* cx, HandleObject ctor, HandleObject proto) {
+  if (cx->realm()->creationOptions().v8ErrorStackLimits()) {
+    RootedId id(cx, NameToId(cx->names().stack));
+    ObjectOpResult result;
+    if (!DeleteProperty(cx, proto, id, result) ||
+        !result.checkStrict(cx, proto, id)) {
+      return false;
+    }
+  }
+  RootedValue limit(cx, Int32Value(DefaultStackTraceLimit(cx)));
+  return DefineDataProperty(cx, ctor, cx->names().stackTraceLimit, limit,
+                            JSPROP_ENUMERATE);
+}
+
+// Read the intrinsic constructor without invoking authored accessors or value
+// conversion. The saved-frame collector, not a fabricated return value,
+// enforces the policy. Firefox bounds collection at 128; V8 allows larger
+// requests and disables the stack on non-number/accessor values.
+mozilla::Maybe<uint32_t> js::GetStackTraceLimit(JSContext* cx) {
+  const bool v8 = cx->realm()->creationOptions().v8ErrorStackLimits();
+  const uint32_t fallback = DefaultStackTraceLimit(cx);
+  JSObject* ctor = cx->global()->maybeGetConstructor(JSProto_Error);
+  if (!ctor) {
+    return mozilla::Some(fallback);
+  }
+  Value value;
+  if (!GetPropertyPure(cx, ctor, NameToId(cx->names().stackTraceLimit), &value)) {
+    return v8 ? mozilla::Nothing() : mozilla::Some(fallback);
+  }
+  if (value.isUndefined()) {
+    return mozilla::Nothing();
+  }
+  if (!value.isNumber()) {
+    return v8 ? mozilla::Nothing() : mozilla::Some(uint32_t(0));
+  }
+  double requested = value.toNumber();
+  if (std::isnan(requested) || requested < 0) {
+    return mozilla::Some(uint32_t(0));
+  }
+  const uint32_t maximum = v8 ? std::numeric_limits<uint32_t>::max()
+                            : uint32_t(MAX_REPORTED_STACK_DEPTH);
+  return mozilla::Some(uint32_t(std::min(requested, double(maximum))));
+}
+
 // The below is the "documentation" from https://v8.dev/docs/stack-trace-api
 //
 //  ## Stack trace collection for custom exceptions
@@ -1102,27 +1203,36 @@ static bool exn_captureStackTrace(JSContext* cx, unsigned argc, Value* vp) {
     }
   }
 
+  mozilla::Maybe<uint32_t> limit = GetStackTraceLimit(cx);
   RootedObject stack(cx);
-  if (!CaptureCurrentStack(
-          cx, &stack, JS::StackCapture(JS::MaxFrames(MAX_REPORTED_STACK_DEPTH)),
-          caller)) {
+  AutoNativeBuiltinStackCapture nativeCapture(cx, args.base());
+  if (limit.isSome() && *limit > 0 &&
+      !CaptureCurrentStack(cx, &stack, JS::StackCapture(JS::MaxFrames(*limit)),
+                           caller)) {
     return false;
   }
-
-  RootedString stackString(cx);
-
-  // Do frame filtering based on the current realm, to filter out any
-  // chrome frames which could exist on the stack.
-  JSPrincipals* principals = cx->realm()->principals();
-  if (!BuildStackString(cx, principals, stack, &stackString)) {
-    return false;
+  if (cx->realm()->creationOptions().v8ErrorStackLimits()) {
+    if (!InstallNativeErrorStack(cx, obj, stack, limit.isSome())) {
+      return false;
+    }
+    args.rval().setUndefined();
+    return true;
+  }
+  RootedValue captured(cx, UndefinedValue());
+  if (limit.isSome()) {
+    RootedString stackString(cx);
+    // Keep the native principals filter: no cross-origin/system frame leak.
+    JSPrincipals* principals = cx->realm()->principals();
+    if (!BuildStackString(cx, principals, stack, &stackString)) {
+      return false;
+    }
+    captured.setString(stackString);
   }
 
   // V8 installs a non-enumerable, configurable getter-setter on the object.
   // JSC installs a non-enumerable, configurable, writable value on the
   // object. We are following JSC here, not V8.
-  RootedValue string(cx, StringValue(stackString));
-  if (!DefineDataProperty(cx, obj, cx->names().stack, string, 0)) {
+  if (!DefineDataProperty(cx, obj, cx->names().stack, captured, 0)) {
     return false;
   }
 

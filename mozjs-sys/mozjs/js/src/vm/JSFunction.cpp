@@ -9,6 +9,8 @@
  */
 
 #include "vm/JSFunction-inl.h"
+#include "vm/NativeFunctionDebugName.h"
+#include "vm/NativeBuiltinMetadata.h"
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Maybe.h"
@@ -963,8 +965,28 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
                   : hasGetterOrSetterPrefix(name->twoByteChars(nogc)));
     };
 
-    if (!out.append("function")) {
+    const bool compact =
+        cx->realm()->creationOptions().compactNativeFunctionSource();
+
+    if (!(compact ? out.append("function ") : out.append("function"))) {
       return nullptr;
+    }
+
+    if (compact) {
+      // Use the engine's immutable explicit name, including lazily named
+      // accessors. Reading the public .name property would invoke user code and
+      // make serialization depend on subsequent property mutations.
+      JS::Rooted<JSAtom*> name(cx);
+      if (!fun->getExplicitName(cx, &name)) {
+        return nullptr;
+      }
+      if (name && !out.append(name)) {
+        return nullptr;
+      }
+      if (!out.append("() { [native code] }")) {
+        return nullptr;
+      }
+      return out.finishString();
     }
 
     // We don't want to fully parse the function's name here because of
@@ -1364,6 +1386,29 @@ js::GeneratorKind JSFunction::clonedSelfHostedGeneratorKind() const {
   return runtimeFromMainThread()->getSelfHostedFunctionGeneratorKind(name);
 }
 
+// Dynamic Code Brand Checks: CreateDynamicFunction consults the host before
+// ordinary ToString for object arguments, just as PerformEval does. A host can
+// return the internal code of a genuine TrustedScript without running script.
+// https://tc39.es/proposal-dynamic-code-brand-checks/#sec-createdynamicfunction
+static bool DynamicFunctionArgumentString(JSContext* cx, HandleValue argument,
+                                          MutableHandleString result) {
+  // The parameter loop reuses a rooted output. A no-code callback need not
+  // overwrite it, so never carry a preceding argument's trusted code forward.
+  result.set(nullptr);
+  if (argument.isObject()) {
+    RootedObject object(cx, &argument.toObject());
+    if (!cx->getCodeForEval(object, result)) {
+      return false;
+    }
+    if (result.get()) {
+      return true;
+    }
+  }
+
+  result.set(ToString<CanGC>(cx, argument));
+  return result.get() != nullptr;
+}
+
 // ES2018 draft rev 2aea8f3e617b49df06414eb062ab44fad87661d3
 // 19.2.1.1.1 CreateDynamicFunction( constructor, newTarget, kind, args )
 static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
@@ -1444,8 +1489,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
       }
 
       // Steps 14.a-b, 14.d.i-ii.
-      str = ToString<CanGC>(cx, args[i]);
-      if (!str) {
+      if (!DynamicFunctionArgumentString(cx, args[i], &str)) {
         return false;
       }
 
@@ -1485,8 +1529,8 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   if (args.length() > 0) {
     // Steps 13, 14.e, 15.
     bodyArg = args[args.length() - 1];
-    bodyString = ToString<CanGC>(cx, bodyArg);
-    if (!bodyString || !sb.append(bodyString)) {
+    if (!DynamicFunctionArgumentString(cx, bodyArg, &bodyString) ||
+        !sb.append(bodyString)) {
       return false;
     }
   }
@@ -1586,6 +1630,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   }
 
   // Step 38.
+  if (!RegisterNativeDynamicFunctionName(cx, fun)) return false;
   args.rval().setObject(*fun);
   return true;
 }
@@ -1835,6 +1880,13 @@ JSFunction* js::NewFunctionWithProto(
     fun->initNative(native, nullptr);
   }
   fun->initAtom(atom);
+
+  if (native && cx->nativeBuiltinDefinitionDepth) {
+    RootedFunction rooted(cx, fun);
+    bool propertyAccessor = flags.kind() == FunctionFlags::Getter || flags.kind() == FunctionFlags::Setter;
+    if (!RegisterNativeBuiltinFunction(cx, rooted, propertyAccessor)) return nullptr;
+    fun = rooted;
+  }
 
 #ifdef DEBUG
   fun->assertFunctionKindIntegrity();
@@ -2124,6 +2176,8 @@ JSFunction* js::DefineFunction(
   if (!DefineDataProperty(cx, obj, id, funVal, flags & ~JSFUN_FLAGS_MASK)) {
     return nullptr;
   }
+
+  if (!RegisterNativeBuiltinFunction(cx, fun, true)) return nullptr;
 
   return fun;
 }

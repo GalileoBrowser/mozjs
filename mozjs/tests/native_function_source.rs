@@ -22,6 +22,7 @@ fn native_source_policy_is_realm_local_and_preserves_real_source_and_metadata() 
     for compact in [true, false, true, false] {
         let mut options = RealmOptions::default();
         options.creationOptions_.compactNativeFunctionSource_ = compact;
+        assert!(!options.creationOptions_.v8ErrorStackLimits_);
         unsafe {
             rooted!(&in(context) let global = JS_NewGlobalObject(
                 context, &SIMPLE_GLOBAL_CLASS, ptr::null_mut(),

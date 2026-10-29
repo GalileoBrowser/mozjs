@@ -1,0 +1,7 @@
+fast_float v8.3.1
+Upstream: https://github.com/fastfloat/fast_float/releases/tag/v8.3.1
+Source archive: https://api.github.com/repos/fastfloat/fast_float/tarball/v8.3.1
+Archive SHA256: ec826844da632268d44e25d270c43af0feeb8725c46e141abc7dd791a5ef3c9b
+Archive source prefix: fastfloat-fast_float-4541151
+Unmodified upstream headers; upstream MIT, Boost and Apache licenses retained.
+Vendored 2026-10-05 for allocation-free decimal parsing of 8/16-bit input.

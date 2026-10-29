@@ -380,6 +380,10 @@ class FrameIter {
   // This is used to provide a raw interface for debugging.
   void* rawFramePtr() const;
 
+  // Distinguish actual logical Ion callers sharing one physical frame.
+  // Neither identity is a callee name, source location, nor GC pointer.
+  unsigned logicalInlineFrameNo() const;
+
   bool inPrologue() const;
 
   const wasm::WasmFrameIter& wasmFrame() const {

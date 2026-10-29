@@ -312,6 +312,7 @@ class MutableScriptFlags : public EnumFlags<MutableScriptFlagsEnum> {
   _(ImmutableFlags, isInlinableLargeFunction, IsInlinableLargeFunction)       \
   _(ImmutableFlags, functionHasNewTargetBinding, FunctionHasNewTargetBinding) \
   _(ImmutableFlags, usesArgumentsIntrinsics, UsesArgumentsIntrinsics)         \
+  _(ImmutableFlags, isStackTransparent, IsStackTransparent)                   \
                                                                               \
   GeneratorKind generatorKind() const {                                       \
     return isGenerator() ? GeneratorKind::Generator                           \

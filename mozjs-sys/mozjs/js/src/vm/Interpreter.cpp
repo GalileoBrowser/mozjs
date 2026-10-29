@@ -9,6 +9,7 @@
  */
 
 #include "vm/Interpreter-inl.h"
+#include "vm/NativeInvocation.h"
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/FloatingPoint.h"
@@ -143,9 +144,17 @@ bool js::GetFunctionThis(JSContext* cx, AbstractFramePtr frame,
   // NOTE: If only non-syntactic WithEnvironments are on the chain, we use the
   // global lexical |this| value. This is for compatibility with the Subscript
   // Loader.
+  // A native embedding can instead opt a dedicated target into global object
+  // binding semantics. That target then supplies the function's global this,
+  // but not the implicit receiver of an identifier call.
   if (frame.script()->hasNonSyntacticScope() && thisv.isNullOrUndefined()) {
     JSObject* env = frame.environmentChain();
     while (true) {
+      if (env->is<WithEnvironmentObject>() &&
+          env->as<WithEnvironmentObject>().isGlobalObjectEnvironment()) {
+        res.setObject(*env->as<WithEnvironmentObject>().withThis());
+        return true;
+      }
       if (IsNSVOLexicalEnvironment(env) ||
           env->is<GlobalLexicalEnvironmentObject>()) {
         auto* obj = env->as<ExtensibleLexicalEnvironmentObject>().thisObject();
@@ -491,6 +500,7 @@ MOZ_ALWAYS_INLINE bool CallJSNative(JSContext* cx, Native native,
   MOZ_ASSERT(!args.callee().is<ProxyObject>());
 
   AutoRealm ar(cx, &args.callee());
+  AutoNativeInvocation invocation(cx, args);
   bool ok = native(cx, args.length(), args.base());
   if (ok) {
     cx->check(args.rval());
@@ -1402,10 +1412,10 @@ static inline Value ComputeImplicitThis(JSObject* env) {
     return UndefinedValue();
   }
 
-  // WithEnvironmentObjects have an actual implicit |this|
+  // Ordinary with bindings supply a receiver. An embedding-owned global
+  // object environment supplies undefined, like a GlobalEnvironmentRecord.
   if (env->is<WithEnvironmentObject>()) {
-    auto* thisObject = env->as<WithEnvironmentObject>().withThis();
-    return ObjectValue(*thisObject);
+    return env->as<WithEnvironmentObject>().implicitThis();
   }
 
   // Debugger environments need special casing, as despite being

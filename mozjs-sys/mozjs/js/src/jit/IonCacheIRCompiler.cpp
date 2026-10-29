@@ -1175,6 +1175,10 @@ bool IonCacheIRCompiler::emitCallNativeGetterResult(
   }
   masm.enterFakeExitFrame(argJSContext, scratch, ExitFrameType::IonOOLNative);
 
+  masm.pushValue(Address(argVp, sizeof(Value)));
+  masm.pushValue(Address(argVp, 0));
+  masm.setFramePushed(masm.framePushed() + IonOOLNativeExitFrameLayout::InvocationSnapshotSize);
+
   if (!sameRealm) {
     masm.switchToRealm(target->realm(), scratch);
   }
@@ -1645,6 +1649,10 @@ bool IonCacheIRCompiler::emitCallNativeSetter(ObjOperandId receiverId,
     return false;
   }
   masm.enterFakeExitFrame(argJSContext, scratch, ExitFrameType::IonOOLNative);
+
+  masm.pushValue(Address(argVp, sizeof(Value)));
+  masm.pushValue(Address(argVp, 0));
+  masm.setFramePushed(masm.framePushed() + IonOOLNativeExitFrameLayout::InvocationSnapshotSize);
 
   if (!sameRealm) {
     masm.switchToRealm(target->realm(), scratch);

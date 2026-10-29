@@ -3651,7 +3651,8 @@ void MacroAssembler::computeImplicitThis(Register env, ValueOperand output,
       spectreZeroRegister(Assembler::NotEqual, scratch, env);
     }
 
-    loadValue(Address(env, WithEnvironmentObject::offsetOfThisSlot()), output);
+    loadValue(Address(env, WithEnvironmentObject::offsetOfImplicitThisSlot()),
+              output);
 
     jump(&done);
   }

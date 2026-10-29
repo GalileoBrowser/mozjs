@@ -31,6 +31,7 @@
 #include "js/RealmOptions.h"
 #include "js/RegExp.h"
 #include "js/ScalarType.h"
+#include "js/String.h"
 #include "js/StructuredClone.h"
 #include "js/Wrapper.h"
 #include "js/experimental/CompileScript.h"
@@ -44,7 +45,14 @@
 #include "mozilla/Unused.h"
 
 #ifndef RUST_BINDGEN
+#  include "util/Text.h"
 #  include "vm/HelperThreads.h"
+#  include "vm/JSFunction.h"
+#  include "vm/JSScript.h"
+#  include "vm/NativeErrorStack.h"
+#  include "vm/NativeInvocation.h"
+#  include "js/CallAndConstruct.h"
+#  include "js/GCAPI.h"
 #endif
 
 typedef bool (*WantToMeasure)(JSObject* obj);
@@ -655,6 +663,163 @@ bool ShouldMeasureObject(JSObject* obj, nsISupports** iface) {
 
 extern "C" {
 
+// Explicitly installed by a native unit test only, never browser startup.
+bool InstallNativeInvocationTestFunctions(JSContext* cx, JSObject* global);
+void ConfigureNativeInvocationTestTier(JSContext* cx, uint32_t tier);
+
+#ifndef RUST_BINDGEN
+static bool ReadNativeInvocationForTest(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (argc < 2 || !args[0].isObject()) return false;
+  JS::RootedObject expected(cx, &args[0].toObject());
+  JS::RootedValue receiver(cx, args[1]);
+  if (argc > 2 && args[2].isBoolean() && args[2].toBoolean()) {
+    JS_GC(cx, JS::GCReason::API);
+  }
+  args.rval().setInt32(js::ProbeNativeInvocationState(cx, expected, receiver));
+  return true;
+}
+
+static bool NativeResultBeforeCallbackForTest(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedValue callback(cx, args.get(0));
+  JS::RootedValue receiver(cx, args.thisv());
+  if (!callback.isObject() && receiver.isObject()) {
+    JS::RootedObject object(cx, &receiver.toObject());
+    if (!JS_GetProperty(cx, object, "callback", &callback)) return false;
+  }
+  // Native ABI permits writing the result before invoking user code. The
+  // regression must observe the saved callee, not this overwritten Value.
+  args.rval().set(receiver);
+  JS::RootedValue ignored(cx);
+  return JS::Call(cx, receiver, callback, JS::HandleValueArray::empty(), &ignored);
+}
+
+bool InstallNativeInvocationTestFunctions(JSContext* cx, JSObject* global) {
+  if (!cx || !global) return false;
+  JS::RootedObject object(cx, global);
+  return JS_DefineFunction(cx, object, "readNativeInvocationForTest", ReadNativeInvocationForTest, 3, 0) &&
+         JS_DefineFunction(cx, object, "nativeResultBeforeCallbackForTest", NativeResultBeforeCallbackForTest, 1, 0);
+}
+
+void ConfigureNativeInvocationTestTier(JSContext* cx, uint32_t tier) {
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_ION_ENABLE, tier >= 2);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE, tier >= 1);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE, tier >= 1);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_WARMUP_TRIGGER, 10);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_ION_NORMAL_WARMUP_TRIGGER, 100);
+  JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_OFFTHREAD_COMPILATION_ENABLE, 0);
+}
+#endif
+
+// Embedding-only regression access; no function is installed in page realms.
+// The caller roots both the error and output Value across the native operation.
+bool ReadNativeErrorCapturedFrameValue(JSContext* cx, JSObject* error,
+                                       uint32_t index, uint32_t field,
+                                       JS::Value* output);
+
+#ifndef RUST_BINDGEN
+bool ReadNativeErrorCapturedFrameValue(JSContext* cx, JSObject* error,
+                                       uint32_t index, uint32_t field,
+                                       JS::Value* output) {
+  if (!cx || !error || !output) {
+    return false;
+  }
+  JS::RootedObject receiver(cx, error);
+  JS::RootedValue result(cx);
+  if (!js::ReadNativeErrorStackFrameValue(cx, receiver, index, field, &result)) {
+    return false;
+  }
+  *output = result;
+  return true;
+}
+#endif
+
+// An embedding result, not a mirror of any private engine object layout.
+// The caller keeps the function rooted and roots both strings before any GC.
+struct ScriptedFunctionSourceMetadata {
+  const char* filename;
+  JSString* function_name;
+  int64_t source_start;
+  JSString* source_url;
+};
+
+ScriptedFunctionSourceMetadata GetScriptedFunctionSourceMetadata(
+    JSContext* cx, JSFunction* function);
+
+#ifndef RUST_BINDGEN
+ScriptedFunctionSourceMetadata GetScriptedFunctionSourceMetadata(
+    JSContext* cx, JSFunction* function) {
+  ScriptedFunctionSourceMetadata metadata{nullptr, nullptr, -1, nullptr};
+  if (!cx || !function) {
+    return metadata;
+  }
+  JS::RootedFunction rooted_function(cx, function);
+  if (!rooted_function->hasBaseScript()) {
+    return metadata;
+  }
+  const js::BaseScript* script = rooted_function->baseScript();
+  if (!script) {
+    return metadata;
+  }
+  // Lazy and compiled functions already retain these native source fields.
+  // Reading them requires neither delazification nor author-property access.
+  metadata.filename = script->filename();
+  js::ScriptSource* source = script->scriptSource();
+  const uint32_t native_start = script->sourceStart();
+  const bool has_cached_position = script->hasCachedUtf16SourceStart();
+  const uint32_t cached_position =
+      has_cached_position ? script->cachedUtf16SourceStart() : 0;
+  // Use the compiler's actual source directive, not text parsed from a
+  // decorated eval filename. Root the new string across source recovery;
+  // the embedding roots both returned strings before another GC operation.
+  JS::RootedString source_url(cx);
+  JS::RootedString name(cx);
+  // Performance source identity comes from the compiler's shared function,
+  // not a runtime clone whose ordinary name may have been inferred from an
+  // evaluated computed property. Keep normal Function.name semantics intact.
+  JS::RootedFunction compiler_function(
+      cx, rooted_function->maybeCanonicalFunction());
+  if (!script->mutedErrors()) {
+    if (compiler_function) {
+      name = compiler_function->fullExplicitOrInferredName();
+    }
+  }
+  if (source->hasDisplayURL()) {
+    source_url = JS_NewUCStringCopyZ(cx, source->displayURL());
+    if (!source_url) {
+      return metadata;
+    }
+  }
+  if (!rooted_function->baseScript()->mutedErrors()) {
+    // Compiler-inferred names belong to the function; debugger guesses do not.
+    // Keep the atom rooted while a compressed source buffer may be recovered.
+    // SourceExtent uses the source buffer's native code units: UTF-8 bytes
+    // for UTF-8 input and UTF-16 units for two-byte input. The Web API requires
+    // UTF-16 units regardless of that internal representation. Normalize the
+    // actual stored text with the engine's shared encoding index; never
+    // parse Function.toString or apply a constant observed in a fixture.
+    if (has_cached_position) {
+      metadata.source_start = cached_position;
+    } else if (source->hasSourceText()) {
+      uint32_t position;
+      if (!source->utf16SourcePosition(cx, native_start, &position)) {
+        return metadata;
+      }
+      metadata.source_start = position;
+      // Source recovery may GC. Reacquire the current script through the
+      // rooted function instead of writing through the earlier raw pointer.
+      // Do not cache missing-source or allocation failures as a permanent -1.
+      rooted_function->baseScript()->setCachedUtf16SourceStart(
+          uint32_t(metadata.source_start));
+    }
+    metadata.function_name = name;
+  }
+  metadata.source_url = source_url;
+  return metadata;
+}
+#endif
+
 JSPrincipals* CreateRustJSPrincipals(const JSPrincipalsCallbacks& callbacks,
                                      void* privateData) {
   return new RustJSPrincipals(callbacks, privateData);
@@ -1183,7 +1348,7 @@ struct DispatchablePointer {
 // The Galileo ABI sentinel is deliberately a link-time symbol rather than a
 // header-only constant. A consumer built with these bindings cannot silently
 // link an upstream libjsglue archive that predates the Galileo entry points.
-uint32_t GalileoMozjsGlueAbi_140_12_31() { return 0x008C0C1F; }
+uint32_t GalileoMozjsGlueAbi_140_12_32() { return 0x008C0C20; }
 
 // Query an object's immutable realm policy without invoking script or unwrapping it.
 bool Servo_UsesCompactNativeFunctionSource(JSObject* object);

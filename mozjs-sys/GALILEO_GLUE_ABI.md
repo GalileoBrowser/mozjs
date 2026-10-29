@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.31
+# Galileo SpiderMonkey glue ABI 140.12.32
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_31` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_32` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.31
+release tag: galileo-mozjs-glue-abi-140.12.32
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.31`.
+   `galileo-mozjs-glue-abi-140.12.32`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -128,3 +128,14 @@ location changes are adapted from Mozilla source commit
 through both compiled assignments and lexical environment properties, including
 captured bindings and direct eval. A distinct ABI also invalidates cached code
 and generated error-number enums from the earlier feature configuration.
+
+## Combined browser API engine contract
+
+ABI 140.12.32 combines the native resource-management grammar and disposal
+configuration above with the existing main-browser engine mechanisms: isolated
+global environment receivers, native continuation capture, and native Error
+construction and argument policies. It retains receiver-realm native function
+serialization and keeps the independent per-realm stack policy. The changed
+RealmCreationOptions layout and added glue are inseparable from this new link
+sentinel and script-cache identity. No security/Oxide browser branch or default
+multiprocess isolation mode is enabled by this engine integration.

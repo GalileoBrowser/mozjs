@@ -964,6 +964,7 @@ struct MOZ_STACK_CLASS BytecodeEmitter {
   [[nodiscard]] bool emitSelfHostedGetBuiltinSymbol(CallNode* callNode);
   [[nodiscard]] bool emitSelfHostedSetIsInlinableLargeFunction(
       CallNode* callNode);
+  [[nodiscard]] bool emitSelfHostedSetIsStackTransparent(CallNode* callNode);
   [[nodiscard]] bool emitSelfHostedSetCanonicalName(CallNode* callNode);
   [[nodiscard]] bool emitSelfHostedArgumentsLength(CallNode* callNode);
   [[nodiscard]] bool emitSelfHostedGetArgument(CallNode* callNode);

@@ -1241,6 +1241,7 @@ static void TraceJitExitFrame(JSTracer* trc, const JSJitFrameIter& frame) {
         frame.exitFrame()->as<NativeExitFrameLayout>();
     size_t len = native->argc() + 2;
     Value* vp = native->vp();
+    TraceRootRange(trc, 2, native->invocationSnapshot(), "native-invocation-snapshot");
     TraceRootRange(trc, len, vp, "ion-native-args");
     if (frame.isExitFrameLayout<ConstructNativeExitFrameLayout>()) {
       TraceRoot(trc, vp + len, "ion-native-new-target");
@@ -1251,6 +1252,7 @@ static void TraceJitExitFrame(JSTracer* trc, const JSJitFrameIter& frame) {
   if (frame.isExitFrameLayout<IonOOLNativeExitFrameLayout>()) {
     IonOOLNativeExitFrameLayout* oolnative =
         frame.exitFrame()->as<IonOOLNativeExitFrameLayout>();
+    TraceRootRange(trc, 2, oolnative->invocationSnapshot(), "native-ool-invocation-snapshot");
     TraceRoot(trc, oolnative->stubCode(), "ion-ool-native-code");
     TraceRoot(trc, oolnative->vp(), "iol-ool-native-vp");
     size_t len = oolnative->argc() + 1;

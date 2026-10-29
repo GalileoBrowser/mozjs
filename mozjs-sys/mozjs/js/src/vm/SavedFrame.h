@@ -60,6 +60,12 @@ class SavedFrame : public NativeObject {
   bool getMutedErrors();
   bool isSelfHosted(JSContext* cx);
   bool isWasm();
+  // Internal capture data only; not part of SavedFrame's public accessors or
+  // structured clone. A cloned location must never transport a live receiver.
+  JSObject* getNativeStackFrameData() const {
+    const Value& data = getReservedSlot(JSSLOT_NATIVE_STACK_FRAME_DATA);
+    return data.isObject() ? &data.toObject() : nullptr;
+  }
 
   // When isWasm():
   uint32_t wasmFuncIndex();
@@ -142,6 +148,7 @@ class SavedFrame : public NativeObject {
     JSSLOT_ASYNCCAUSE,
     JSSLOT_PARENT,
     JSSLOT_PRINCIPALS,
+    JSSLOT_NATIVE_STACK_FRAME_DATA,
 
     // The total number of reserved slots in the SavedFrame class.
     JSSLOT_COUNT
@@ -151,6 +158,7 @@ class SavedFrame : public NativeObject {
 struct SavedFrame::HashPolicy {
   using Lookup = SavedFrame::Lookup;
   using SavedFramePtrHasher = StableCellHasher<SavedFrame*>;
+  using NativeFrameDataHasher = StableCellHasher<JSObject*>;
   using JSPrincipalsPtrHasher = PointerHasher<JSPrincipals*>;
 
   static bool maybeGetHash(const Lookup& l, HashNumber* hashOut);
@@ -162,7 +170,8 @@ struct SavedFrame::HashPolicy {
   static void rekey(Key& key, const Key& newKey);
 
  private:
-  static HashNumber calculateHash(const Lookup& lookup, HashNumber parentHash);
+  static HashNumber calculateHash(const Lookup& lookup, HashNumber parentHash,
+                                  HashNumber nativeDataHash);
 };
 
 }  // namespace js

@@ -67,6 +67,11 @@
 // name for self-hosted builtins is stored.
 #define LAZY_FUNCTION_NAME_SLOT 0
 
+// Cloned self-hosted functions have a second extended slot. Mark actual public
+// registration there, independently of names, aliases or source text. Private
+// implementation helpers cloned by getIntrinsicValueSlow remain unmarked.
+#define PUBLIC_SELF_HOSTED_FUNCTION_SLOT 1
+
 // The iterated object for Array/String/Map/Set iterators.
 #define ITERATOR_SLOT_TARGET 0
 // Used for list, i.e. Array and String, iterators.

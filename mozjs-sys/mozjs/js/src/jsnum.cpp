@@ -18,6 +18,10 @@
 #include "mozilla/Utf8.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <charconv>
 #include <iterator>
 #include <limits>
@@ -44,6 +48,7 @@
 #include "js/PropertyAndElement.h"  // JS_DefineFunctions
 #include "js/PropertySpec.h"
 #include "util/DoubleToString.h"
+#include "util/FastDecimal.h"
 #include "util/Memory.h"
 #include "util/StringBuilder.h"
 #include "vm/BigIntType.h"
@@ -355,6 +360,79 @@ bool GetDecimalInteger<Utf8Unit>(const Utf8Unit* start, const Utf8Unit* end,
 
 }  // namespace js
 
+namespace {
+
+bool FastDecimalEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("GALILEO_FAST_DECIMAL");
+    return !value || value[0] != '0';
+  }();
+  return enabled;
+}
+
+void TraceDecimalConversion(bool literal, bool wide, bool fast,
+                            size_t consumed) {
+  static const bool enabled = [] {
+    const char* value = std::getenv("GALILEO_DECIMAL_TRACE");
+    return value && value[0] == '1';
+  }();
+  if (!enabled) {
+    return;
+  }
+  struct Counts {
+    uint64_t owner = 0;
+    uint64_t calls = 0;
+    uint64_t literal = 0;
+    uint64_t prefix = 0;
+    uint64_t fast = 0;
+    uint64_t fallback = 0;
+    uint64_t latin1 = 0;
+    uint64_t utf16 = 0;
+    uint64_t consumed = 0;
+  };
+  static std::atomic<uint64_t> owners{0};
+  static std::atomic<uint64_t> events{0};
+  static thread_local Counts count;
+  if (!count.owner) {
+    count.owner = owners.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
+  count.calls++;
+  count.literal += literal;
+  count.prefix += !literal;
+  count.fast += fast;
+  count.fallback += !fast;
+  count.latin1 += !wide;
+  count.utf16 += wide;
+  count.consumed += consumed;
+  if (count.calls > 8 && count.calls % 256 != 0) {
+    return;
+  }
+  uint64_t event = events.fetch_add(1, std::memory_order_relaxed);
+  if (event >= 32768) {
+    return;
+  }
+  auto timeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  std::fprintf(stderr,
+               "[galileo decimal] time_ns=%lld thread=ThreadId(%llu) "
+               "enabled=%u calls=%llu literal=%llu prefix=%llu fast=%llu "
+               "fallback=%llu latin1=%llu utf16=%llu consumed=%llu event=%llu\n",
+               static_cast<long long>(timeNs),
+               static_cast<unsigned long long>(count.owner),
+               unsigned(FastDecimalEnabled()),
+               static_cast<unsigned long long>(count.calls),
+               static_cast<unsigned long long>(count.literal),
+               static_cast<unsigned long long>(count.prefix),
+               static_cast<unsigned long long>(count.fast),
+               static_cast<unsigned long long>(count.fallback),
+               static_cast<unsigned long long>(count.latin1),
+               static_cast<unsigned long long>(count.utf16),
+               static_cast<unsigned long long>(count.consumed),
+               static_cast<unsigned long long>(event));
+}
+
+}  // namespace
+
 template <typename CharT>
 bool js::GetDecimal(const CharT* start, const CharT* end, double* dp) {
   MOZ_ASSERT(start <= end);
@@ -362,6 +440,13 @@ bool js::GetDecimal(const CharT* start, const CharT* end, double* dp) {
   size_t length = end - start;
 
   auto convert = [](auto* chars, size_t length) -> double {
+    double fastValue;
+    const std::remove_pointer_t<decltype(chars)>* after;
+    if (FastDecimalEnabled() &&
+        TryFastDecimalChars(chars, chars + length, true, &fastValue, &after)) {
+      TraceDecimalConversion(true, sizeof(*chars) == 2, true, length);
+      return fastValue;
+    }
     using SToDConverter = double_conversion::StringToDoubleConverter;
     SToDConverter converter(/* flags = */ 0, /* empty_string_value = */ 0.0,
                             /* junk_string_value = */ 0.0,
@@ -372,6 +457,7 @@ bool js::GetDecimal(const CharT* start, const CharT* end, double* dp) {
     double d = converter.StringToDouble(chars, lengthInt, &processed);
     MOZ_ASSERT(processed >= 0);
     MOZ_ASSERT(size_t(processed) == length);
+    TraceDecimalConversion(true, sizeof(*chars) == 2, false, processed);
     return d;
   };
 
@@ -2252,6 +2338,14 @@ template <typename CharT>
 double js_strtod(const CharT* begin, const CharT* end, const CharT** dEnd) {
   const CharT* s = SkipSpace(begin, end);
   size_t length = end - s;
+  double fastValue;
+  const CharT* after;
+  if (FastDecimalEnabled() &&
+      js::TryFastDecimalChars(s, end, false, &fastValue, &after)) {
+    *dEnd = after;
+    TraceDecimalConversion(false, sizeof(CharT) == 2, true, after - s);
+    return fastValue;
+  }
 
   {
     // StringToDouble can make indirect calls but can't trigger a GC.
@@ -2279,6 +2373,7 @@ double js_strtod(const CharT* begin, const CharT* end, const CharT** dEnd) {
 
     if (processed > 0) {
       *dEnd = s + processed;
+      TraceDecimalConversion(false, sizeof(CharT) == 2, false, processed);
       return d;
     }
   }
@@ -2298,11 +2393,13 @@ double js_strtod(const CharT* begin, const CharT* end, const CharT** dEnd) {
     if (*afterSign == 'I' && size_t(end - afterSign) >= Infinity.length() &&
         EqualChars(afterSign, Infinity.data(), Infinity.length())) {
       *dEnd = afterSign + Infinity.length();
+      TraceDecimalConversion(false, sizeof(CharT) == 2, false, *dEnd - s);
       return negative ? NegativeInfinity<double>() : PositiveInfinity<double>();
     }
   }
 
   *dEnd = begin;
+  TraceDecimalConversion(false, sizeof(CharT) == 2, false, 0);
   return 0.0;
 }
 

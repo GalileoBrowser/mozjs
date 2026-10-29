@@ -29,6 +29,8 @@
 #include "vm/Iteration.h"
 #include "vm/JSContext.h"
 #include "vm/JSObject.h"
+#include "vm/NativeBuiltinMetadata.h"
+#include "vm/NativePromiseStack.h"
 #include "vm/PlainObject.h"    // js::PlainObject
 #include "vm/PromiseObject.h"  // js::PromiseObject, js::PromiseSlot_*
 #include "vm/SelfHosting.h"
@@ -42,6 +44,49 @@
 #include "vm/NativeObject-inl.h"
 
 using namespace js;
+
+namespace js {
+class MOZ_RAII AutoNativePromiseCombinatorCall {
+  JSContext* cx_;
+  AutoNativePromiseCombinatorCall* previous_;
+  RootedObject function_, constructor_, promise_;
+  NativePromiseCombinatorKind kind_;
+ public:
+  AutoNativePromiseCombinatorCall(JSContext* cx, HandleObject function,
+      HandleObject constructor, HandleObject promise, NativePromiseCombinatorKind kind)
+      : cx_(cx), previous_(cx->nativePromiseCombinatorCall),
+        function_(cx, function), constructor_(cx, constructor), promise_(cx, promise), kind_(kind) {
+    cx_->nativePromiseCombinatorCall = this;
+  }
+  ~AutoNativePromiseCombinatorCall() {
+    MOZ_ASSERT(cx_->nativePromiseCombinatorCall == this);
+    cx_->nativePromiseCombinatorCall = previous_;
+  }
+  bool registerElement(JSContext* cx, HandleFunction element, HandleObject promise, uint32_t index) {
+    // Capability identity excludes internal combinators called reentrantly
+    // from authored hooks of this public invocation.
+    if (promise != promise_) return true;
+    return RegisterNativePromiseElement(cx, element, function_, constructor_, promise_, index, kind_);
+  }
+};
+}  // namespace js
+
+namespace {
+class MOZ_RAII AutoNativePromiseTaskPromise {
+  JSContext* cx_;
+  const RootedObject* previous_;
+  RootedObject promise_;
+ public:
+  AutoNativePromiseTaskPromise(JSContext* cx, HandleObject promise)
+      : cx_(cx), previous_(cx->nativePromiseTaskPromise), promise_(cx, promise) {
+    cx_->nativePromiseTaskPromise = &promise_;
+  }
+  ~AutoNativePromiseTaskPromise() {
+    MOZ_ASSERT(cx_->nativePromiseTaskPromise == &promise_);
+    cx_->nativePromiseTaskPromise = previous_;
+  }
+};
+}  // namespace
 
 static double MillisecondsSinceStartup() {
   auto now = mozilla::TimeStamp::Now();
@@ -2282,6 +2327,20 @@ static bool PromiseReactionJob(JSContext* cx, unsigned argc, Value* vp) {
   // Optimized/special cases.
   Handle<PromiseReactionRecord*> reaction =
       reactionObj.as<PromiseReactionRecord>();
+  RootedObject taskPromise(cx);
+  if (reaction->isAsyncFunction()) {
+    taskPromise = reaction->asyncFunctionGenerator()->promise();
+  } else if (reaction->isDefaultResolvingHandler()) {
+    taskPromise = reaction->defaultResolvingPromise();
+  } else if (reaction->isAsyncGenerator()) {
+    Rooted<AsyncGeneratorObject*> generator(cx, reaction->asyncGenerator());
+    if (!generator->isQueueEmpty()) {
+      taskPromise = AsyncGeneratorObject::peekRequest(generator)->promise();
+    }
+  } else {
+    taskPromise = reaction->promise();
+  }
+  AutoNativePromiseTaskPromise nativeTask(cx, taskPromise);
   if (reaction->isDefaultResolvingHandler()) {
     return DefaultResolvingPromiseReactionJob(cx, reaction);
   }
@@ -2410,6 +2469,7 @@ static bool PromiseResolveThenableJob(JSContext* cx, unsigned argc, Value* vp) {
   RootedFunction job(cx, &args.callee().as<JSFunction>());
   RootedObject promise(
       cx, &job->getExtendedSlot(ThenableJobSlot_Promise).toObject());
+  AutoNativePromiseTaskPromise nativeTask(cx, promise);
   RootedValue thenable(cx, job->getExtendedSlot(ThenableJobSlot_Thenable));
   RootedValue then(cx, job->getExtendedSlot(ThenableJobSlot_Handler));
   MOZ_ASSERT(then.isObject());
@@ -2482,6 +2542,7 @@ static bool PromiseResolveBuiltinThenableJob(JSContext* cx, unsigned argc,
   RootedFunction job(cx, &args.callee().as<JSFunction>());
   RootedObject promise(
       cx, &job->getExtendedSlot(ThenableJobSlot_Promise).toObject());
+  AutoNativePromiseTaskPromise nativeTask(cx, promise);
   RootedObject thenable(
       cx, &job->getExtendedSlot(ThenableJobSlot_Thenable).toObject());
   // The handler slot is not used for builtin `then`.
@@ -3109,12 +3170,14 @@ enum class CombinatorKind { All, AllSettled, Any, Race };
   }
 
   RootedValue promiseResolve(cx, UndefinedValue());
+  RootedObject intrinsicPromiseConstructor(cx);
   {
     JSObject* promiseCtor =
         GlobalObject::getOrCreatePromiseConstructor(cx, cx->global());
     if (!promiseCtor) {
       return false;
     }
+    intrinsicPromiseConstructor = promiseCtor;
 
     if (C != promiseCtor || !HasDefaultPromiseProperties(cx)) {
       // Step 3. Let promiseResolve be GetPromiseResolve(C).
@@ -3167,6 +3230,16 @@ enum class CombinatorKind { All, AllSettled, Any, Race };
     return AbruptRejectPromise(cx, args, promiseCapability);
   }
 
+  NativePromiseCombinatorKind nativeKind = NativePromiseCombinatorKind::None;
+  switch (kind) {
+    case CombinatorKind::All: nativeKind = NativePromiseCombinatorKind::All; break;
+    case CombinatorKind::AllSettled: nativeKind = NativePromiseCombinatorKind::AllSettled; break;
+    case CombinatorKind::Any: nativeKind = NativePromiseCombinatorKind::Any; break;
+    case CombinatorKind::Race: break;
+  }
+  RootedObject nativeCombinator(cx, &args.callee());
+  AutoNativePromiseCombinatorCall nativeCall(cx, nativeCombinator,
+      intrinsicPromiseConstructor, promiseCapability.promise(), nativeKind);
   bool done, result;
   switch (kind) {
     case CombinatorKind::All:
@@ -3995,8 +4068,8 @@ static JSFunction* NewPromiseCombinatorElementFunction(
     JSContext* cx, Native native,
     Handle<PromiseCombinatorDataHolder*> dataHolder, uint32_t index,
     Handle<Value> maybeResolveFunc) {
-  JSFunction* fn = NewNativeFunction(
-      cx, native, 1, nullptr, gc::AllocKind::FUNCTION_EXTENDED, GenericObject);
+  RootedFunction fn(cx, NewNativeFunction(
+      cx, native, 1, nullptr, gc::AllocKind::FUNCTION_EXTENDED, GenericObject));
   if (!fn) {
     return nullptr;
   }
@@ -4012,7 +4085,108 @@ static JSFunction* NewPromiseCombinatorElementFunction(
         PromiseCombinatorElementFunctionSlot_ElementIndexOrResolveFunc,
         Int32Value(index));
   }
+  if (cx->nativePromiseCombinatorCall) {
+    RootedObject capability(cx, dataHolder->promiseObj());
+    if (!cx->nativePromiseCombinatorCall->registerElement(cx, fn, capability, index)) return nullptr;
+  }
   return fn;
+}
+
+namespace {
+PromiseReactionRecord* SingleNativeAsyncReaction(JSObject* object) {
+  object = CheckedUnwrapStatic(object);
+  if (!object) return nullptr;
+  if (object->is<PromiseReactionRecord>()) {
+    auto* reaction = &object->as<PromiseReactionRecord>();
+    return reaction->isDebuggerDummy() ? nullptr : reaction;
+  }
+  if (!object->is<ArrayObject>()) return nullptr;
+  auto& array = object->as<ArrayObject>();
+  PromiseReactionRecord* result = nullptr;
+  for (uint32_t i = 0; i < array.getDenseInitializedLength(); ++i) {
+    const Value& entry = array.getDenseElement(i);
+    if (!entry.isObject()) return nullptr;
+    JSObject* actual = CheckedUnwrapStatic(&entry.toObject());
+    if (!actual || !actual->is<PromiseReactionRecord>()) return nullptr;
+    auto* reaction = &actual->as<PromiseReactionRecord>();
+    if (reaction->isDebuggerDummy()) continue;
+    if (result) return nullptr; // Multiple authored continuations are ambiguous.
+    result = reaction;
+  }
+  return result;
+}
+}  // namespace
+
+bool js::CaptureNativePromiseStackSnapshots(JSContext* cx,
+    JS::MutableHandle<NativePromiseStackSnapshots> snapshots, uint32_t limit) {
+  if (!cx->nativePromiseTaskPromise || !*cx->nativePromiseTaskPromise || !limit) return true;
+  RootedObject current(cx, cx->nativePromiseTaskPromise->get());
+  JS::RootedObjectVector visited(cx);
+  auto append = [&](JSObject* generator, JSObject* combinator, JSObject* constructor,
+                    uint32_t index, NativePromiseCombinatorKind kind) {
+    if (!snapshots.get().emplaceBack(generator, combinator, constructor, index, kind)) {
+      ReportOutOfMemory(cx); return false;
+    }
+    return true;
+  };
+  while (current && snapshots.get().length() < limit) {
+    current = CheckedUnwrapStatic(current);
+    if (!current || !current->is<PromiseObject>()) break;
+    for (JSObject* seen : visited) if (seen == current) return true;
+    if (!visited.append(current)) return false;
+    Rooted<PromiseObject*> promise(cx, &current->as<PromiseObject>());
+    if (promise->state() != JS::PromiseState::Pending) break;
+    RootedValue reactions(cx, promise->reactions());
+    if (!reactions.isObject()) break;
+    Rooted<PromiseReactionRecord*> reaction(cx, SingleNativeAsyncReaction(&reactions.toObject()));
+    if (!reaction) break;
+    if (reaction->isAsyncFunction()) {
+      Rooted<AsyncFunctionGeneratorObject*> generator(cx, reaction->asyncFunctionGenerator());
+      if (!generator->isSuspended()) break;
+      if (!append(generator, nullptr, nullptr, 0, NativePromiseCombinatorKind::None)) return false;
+      current = generator->promise();
+      continue;
+    }
+    if (reaction->isAsyncGenerator()) {
+      Rooted<AsyncGeneratorObject*> generator(cx, reaction->asyncGenerator());
+      if (!generator->isSuspended() || generator->isQueueEmpty()) break;
+      if (!append(generator, nullptr, nullptr, 0, NativePromiseCombinatorKind::None)) return false;
+      current = AsyncGeneratorObject::peekRequest(generator)->promise();
+      continue;
+    }
+    RootedObject element(cx), combinator(cx), constructor(cx), capability(cx);
+    uint32_t index = 0;
+    NativePromiseCombinatorKind kind = NativePromiseCombinatorKind::None;
+    for (uint32_t slot : {ReactionRecordSlot_OnFulfilled, ReactionRecordSlot_OnRejected}) {
+      const Value& handler = reaction->getFixedSlot(slot);
+      if (!handler.isObject()) continue;
+      element = CheckedUnwrapStatic(&handler.toObject());
+      if (!element) continue;
+      if (!ReadNativePromiseElement(cx, element, &combinator, &constructor, &capability, &index, &kind)) return false;
+      if (kind != NativePromiseCombinatorKind::None) break;
+    }
+    if (kind != NativePromiseCombinatorKind::None) {
+      // V8 retains the genuine logical frame even after an element has been
+      // called, but stops following its now-cleared capability context.
+      if (!append(nullptr, combinator, constructor, index, kind)) return false;
+      // Called-state is actual engine state; never run the mutating
+      // AlreadyCalled helper merely to inspect the graph.
+      if (!element->is<JSFunction>() || !element->as<JSFunction>().isExtended()) break;
+      RootedObject calledStateElement(cx, element);
+      const Value& shared = element->as<JSFunction>().getExtendedSlot(
+          PromiseCombinatorElementFunctionSlot_ElementIndexOrResolveFunc);
+      if (shared.isObject()) calledStateElement = CheckedUnwrapStatic(&shared.toObject());
+      if (!calledStateElement || !calledStateElement->is<JSFunction>() ||
+          !calledStateElement->as<JSFunction>().isExtended() ||
+          calledStateElement->as<JSFunction>().getExtendedSlot(PromiseCombinatorElementFunctionSlot_Data).isUndefined()) break;
+      current = capability;
+    } else if (reaction->isDefaultResolvingHandler()) {
+      current = reaction->defaultResolvingPromise();
+    } else {
+      current = reaction->promise();
+    }
+  }
+  return true;
 }
 
 /**

@@ -1,0 +1,57 @@
+{
+  "version": "v8.3.1",
+  "files": [
+    {
+      "path": "LICENSE-APACHE",
+      "sha256": "097a889aa954d04e088b790b10a4014d6189561d0a6013935a73ce3d4ddaaf06"
+    },
+    {
+      "path": "LICENSE-BOOST",
+      "sha256": "8d8291caf1cee26d23acf3eb67c9f9a2d58f1c681b16a4fbe8cbfb9e3c0b5a9b"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "sha256": "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6"
+    },
+    {
+      "path": "README.vendor",
+      "sha256": "1db50a0a35aed0da61aafae15bf54cfc6b173c9f9b25614d82c6f303fc2b6d6b"
+    },
+    {
+      "path": "include/fast_float/ascii_number.h",
+      "sha256": "7a5ca275a39422f7a566d759b546b1c81a4be0fb7fd34e93d416d25a669d49b6"
+    },
+    {
+      "path": "include/fast_float/bigint.h",
+      "sha256": "ba39c5d8d8c8fe9ca8d7300aea8392a4367fd60689a9b8e3268aadceca729e53"
+    },
+    {
+      "path": "include/fast_float/constexpr_feature_detect.h",
+      "sha256": "2dd2dc5f98a8f1a78813e62d47e82a19ebe42af726356723d60f6eb387c6dd38"
+    },
+    {
+      "path": "include/fast_float/decimal_to_binary.h",
+      "sha256": "5f4d50ddfac62add34b6682fc0cded2af3e875716aeaa3c9bfdee0a87d9e797c"
+    },
+    {
+      "path": "include/fast_float/digit_comparison.h",
+      "sha256": "69fb10f59005eabf0d44a5caf4733fd97a3838a8ac7090c4dc6e3e9e61a31ac3"
+    },
+    {
+      "path": "include/fast_float/fast_float.h",
+      "sha256": "fec4c0dc177fb3986a9007824c81fb93338ef83a6dba23325d430174a8686ce1"
+    },
+    {
+      "path": "include/fast_float/fast_table.h",
+      "sha256": "c18e0a0a2513215730557cc1dd53541cacd72855ddc0287934e78b364f989edb"
+    },
+    {
+      "path": "include/fast_float/float_common.h",
+      "sha256": "c2f2391d8761f6ef568af864f795cbdfcb489ea38ad082ccdfe3a58eedf052b1"
+    },
+    {
+      "path": "include/fast_float/parse_number.h",
+      "sha256": "b917be335a65005f6c8a59dac881484b5f81eeb3cc604a7d37698c54fde0a006"
+    }
+  ]
+}

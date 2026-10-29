@@ -97,7 +97,7 @@ class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
                   mozilla::Maybe<uint32_t> numBoundArgs = mozilla::Nothing());
   void updateReturnValue();
 
-  enum class NativeCallType { Native, ClassHook };
+  enum class NativeCallType { Native, ClassHook, DOMMethod };
   enum class ClearLocalAllocSite { No, Yes };
   bool emitCallNativeShared(
       NativeCallType callType, ObjOperandId calleeId, Int32OperandId argcId,

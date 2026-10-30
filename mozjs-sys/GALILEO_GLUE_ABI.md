@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.32
+# Galileo SpiderMonkey glue ABI 140.12.33
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_32` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_33` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.32
+release tag: galileo-mozjs-glue-abi-140.12.33
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.32`.
+   `galileo-mozjs-glue-abi-140.12.33`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -139,3 +139,24 @@ serialization and keeps the independent per-realm stack policy. The changed
 RealmCreationOptions layout and added glue are inseparable from this new link
 sentinel and script-cache identity. No security/Oxide browser branch or default
 multiprocess isolation mode is enabled by this engine integration.
+
+## Native stable collection insertion methods
+
+ABI 140.12.33 ships the native Map and WeakMap `getOrInsert` and
+`getOrInsertComputed` implementations from Firefox shipping revision
+`7d3eb0b848b147eaad64bb36f639e200fb9d8fae`. Only these release-ready
+feature gates and their existing runtime preference are changed. Nightly
+mode and unrelated experimental JavaScript features remain disabled.
+The distinct link sentinel and ABI value prevent reuse of prebuilt archives
+and cached optimized/script code generated with ABI32's self-hosted tables.
+The browser continues to include this ABI in its native cache build ID.
+
+The collection backport also includes Firefox revisions
+`3a197130bc00a08fc1e602b0433821756cf91dac` (canonical callback zero keys) and
+`8a1ec7a6c002e8f1ee27cc7757515a0c477f1c1c` (reject invalid weak keys before
+calling user code). The existing Test262 cases run without new exclusions.
+
+The insertion intrinsic uses the pinned 140 native weak-key predicate and its
+JSContext parameter. Symbol weak keys remain a separately unsupported release
+feature; this ABI does not enable their conditional GC implementation. Full
+browser Test262 qualification must retain those cases and report the gap.

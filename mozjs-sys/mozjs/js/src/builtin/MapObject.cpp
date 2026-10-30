@@ -388,10 +388,8 @@ const JSFunctionSpec MapObject::methods[] = {
     JS_FN("values", values, 0, 0),
     JS_FN("clear", clear, 0, 0),
     JS_SELF_HOSTED_FN("forEach", "MapForEach", 2, 0),
-#ifdef NIGHTLY_BUILD
     JS_FN("getOrInsert", getOrInsert, 2, 0),
     JS_SELF_HOSTED_FN("getOrInsertComputed", "MapGetOrInsertComputed", 2, 0),
-#endif
     JS_FN("entries", entries, 0, 0),
     // @@iterator is re-defined in finishInit so that it has the
     // same identity as |entries|.
@@ -574,7 +572,6 @@ bool MapObject::setWithHashableKey(JSContext* cx, const HashableValue& key,
   return true;
 }
 
-#ifdef NIGHTLY_BUILD
 bool MapObject::getOrInsert(JSContext* cx, const Value& key, const Value& val,
                             MutableHandleValue rval) {
   HashableValue k;
@@ -605,7 +602,6 @@ bool MapObject::getOrInsert(JSContext* cx, const Value& key, const Value& val,
   }
   return true;
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 MapObject* MapObject::createWithProto(JSContext* cx, HandleObject proto,
                                       NewObjectKind newKind) {
@@ -951,7 +947,6 @@ bool MapObject::set(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<MapObject::is, MapObject::set_impl>(cx, args);
 }
 
-#ifdef NIGHTLY_BUILD
 bool MapObject::getOrInsert_impl(JSContext* cx, const CallArgs& args) {
   auto* mapObj = &args.thisv().toObject().as<MapObject>();
   return mapObj->getOrInsert(cx, args.get(0), args.get(1), args.rval());
@@ -963,7 +958,6 @@ bool MapObject::getOrInsert(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<MapObject::is, MapObject::getOrInsert_impl>(cx,
                                                                           args);
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 bool MapObject::delete_(JSContext* cx, const Value& key, bool* rval) {
   HashableValue k;
@@ -1885,7 +1879,6 @@ JS_PUBLIC_API bool JS::MapHas(JSContext* cx, HandleObject obj, HandleValue key,
   return enter.unwrapped()->has(cx, wrappedKey, rval);
 }
 
-#ifdef NIGHTLY_BUILD
 JS_PUBLIC_API bool JS::MapGetOrInsert(JSContext* cx, HandleObject obj,
                                       HandleValue key, HandleValue val,
                                       MutableHandleValue rval) {
@@ -1908,7 +1901,6 @@ JS_PUBLIC_API bool JS::MapGetOrInsert(JSContext* cx, HandleObject obj,
   }
   return JS_WrapValue(cx, rval);
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 JS_PUBLIC_API bool JS::MapDelete(JSContext* cx, HandleObject obj,
                                  HandleValue key, bool* rval) {

@@ -990,6 +990,35 @@ const JSFunctionSpec js::regexp_methods[] = {
     JS_FS_END,
 };
 
+// Preserve the actual native methods and getters while using Chromium's
+// prototype initialization order. Firefox uses the original class metadata.
+bool
+js::InitChromiumRegExpPrototype(JSContext* cx, HandleObject proto)
+{
+  const JSFunctionSpec execMethods[] = { regexp_methods[3], JS_FS_END };
+  const JSPropertySpec properties[] = {
+    regexp_properties[5],
+    regexp_properties[0],
+    regexp_properties[2],
+    regexp_properties[1],
+    regexp_properties[3],
+    regexp_properties[4],
+    regexp_properties[6],
+    regexp_properties[7],
+    regexp_properties[8],
+    regexp_properties[9],
+    JS_PS_END,
+  };
+  const JSFunctionSpec remainingMethods[] = {
+    regexp_methods[2], regexp_methods[1], regexp_methods[4],
+    regexp_methods[5], regexp_methods[6], regexp_methods[7],
+    regexp_methods[8], regexp_methods[9], JS_FS_END,
+  };
+  return JS_DefineFunctions(cx, proto, execMethods) &&
+         JS_DefineProperties(cx, proto, properties) &&
+         JS_DefineFunctions(cx, proto, remainingMethods);
+}
+
 static constexpr JS::Latin1Char SHOULD_HEX_ESCAPE = JSString::MAX_LATIN1_CHAR;
 
 /**
@@ -1358,7 +1387,21 @@ static bool static_input_setter(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   res->setPendingInput(str);
-  args.rval().setString(str);
+  if (cx->realm()->creationOptions().compactNativeFunctionSource()) {
+    args.rval().setUndefined();
+  } else {
+    args.rval().setString(str);
+  }
+  return true;
+}
+
+// Chromium's legacy match-result accessors have setters that ignore their
+// argument. They neither coerce it nor replace the actual RegExp match state.
+static bool
+static_match_result_setter(JSContext*, unsigned argc, Value* vp)
+{
+  CallArgs args = CallArgsFromVp(argc, vp);
+  args.rval().setUndefined();
   return true;
 }
 
@@ -1389,6 +1432,38 @@ const JSPropertySpec js::regexp_static_props[] = {
     JS_PSG("$'", static_rightContext_getter, JSPROP_PERMANENT),
     JS_SELF_HOSTED_SYM_GET(species, "$RegExpSpecies", 0),
     JS_PS_END,
+};
+
+// Install these genuine legacy accessors during native class creation in
+// Chromium-compatible realms. Firefox keeps the existing permanent fields.
+const JSPropertySpec js::regexp_chromium_static_props[] = {
+  JS_PSGS("input", static_input_getter, static_input_setter, 0),
+  JS_PSGS("$_", static_input_getter, static_input_setter, 0),
+  JS_PSGS("lastMatch", static_lastMatch_getter, static_match_result_setter, 0),
+  JS_PSGS("$&", static_lastMatch_getter, static_match_result_setter, 0),
+  JS_PSGS("lastParen", static_lastParen_getter, static_match_result_setter, 0),
+  JS_PSGS("$+", static_lastParen_getter, static_match_result_setter, 0),
+  JS_PSGS("leftContext",
+          static_leftContext_getter,
+          static_match_result_setter,
+          0),
+  JS_PSGS("$`", static_leftContext_getter, static_match_result_setter, 0),
+  JS_PSGS("rightContext",
+          static_rightContext_getter,
+          static_match_result_setter,
+          0),
+  JS_PSGS("$'", static_rightContext_getter, static_match_result_setter, 0),
+  JS_PSGS("$1", static_paren1_getter, static_match_result_setter, 0),
+  JS_PSGS("$2", static_paren2_getter, static_match_result_setter, 0),
+  JS_PSGS("$3", static_paren3_getter, static_match_result_setter, 0),
+  JS_PSGS("$4", static_paren4_getter, static_match_result_setter, 0),
+  JS_PSGS("$5", static_paren5_getter, static_match_result_setter, 0),
+  JS_PSGS("$6", static_paren6_getter, static_match_result_setter, 0),
+  JS_PSGS("$7", static_paren7_getter, static_match_result_setter, 0),
+  JS_PSGS("$8", static_paren8_getter, static_match_result_setter, 0),
+  JS_PSGS("$9", static_paren9_getter, static_match_result_setter, 0),
+  JS_SELF_HOSTED_SYM_GET(species, "$RegExpSpecies", 0),
+  JS_PS_END,
 };
 
 const JSFunctionSpec js::regexp_static_methods[] = {

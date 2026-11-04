@@ -34,6 +34,7 @@
 #endif
 #include "builtin/FinalizationRegistryObject.h"
 #include "builtin/MapObject.h"
+#include "builtin/RegExp.h"
 #include "builtin/ShadowRealm.h"
 #include "builtin/Symbol.h"
 #ifdef JS_HAS_INTL_API
@@ -405,6 +406,9 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
   const bool commonErrorOrder =
       cx->realm()->creationOptions().v8ErrorStackLimits() &&
       ErrorObject::isErrorClass(clasp);
+  const bool commonRegExpOrder =
+    key == JSProto_RegExp &&
+    cx->realm()->creationOptions().compactNativeFunctionSource();
   if (commonErrorOrder) {
     MOZ_ASSERT(proto);
     if (!LinkConstructorAndPrototype(cx, ctor, proto)) {
@@ -421,31 +425,54 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
     }
   }
 
-  if (const JSFunctionSpec* funs = clasp->specPrototypeFunctions()) {
-    if (!JS_DefineFunctions(cx, proto, funs)) {
+  // Native RegExp constructors in Chromium-compatible realms link their
+  // prototype before installing legacy fields, and install escape last.
+  if (commonRegExpOrder) {
+    MOZ_ASSERT(proto);
+    if (!LinkConstructorAndPrototype(cx, ctor, proto)) {
       return false;
     }
   }
-  if (!commonErrorOrder) {
-    if (const JSPropertySpec* props = clasp->specPrototypeProperties()) {
-      if (!JS_DefineProperties(cx, proto, props)) {
+
+  if (commonRegExpOrder) {
+    if (!InitChromiumRegExpPrototype(cx, proto)) {
+      return false;
+    }
+  } else {
+    if (const JSFunctionSpec* funs = clasp->specPrototypeFunctions()) {
+      if (!JS_DefineFunctions(cx, proto, funs)) {
         return false;
       }
     }
+    if (!commonErrorOrder) {
+      if (const JSPropertySpec* props = clasp->specPrototypeProperties()) {
+        if (!JS_DefineProperties(cx, proto, props)) {
+          return false;
+        }
+      }
+    }
+  }
+  const JSPropertySpec* constructorProperties =
+    commonRegExpOrder ? regexp_chromium_static_props
+                      : clasp->specConstructorProperties();
+  if (commonRegExpOrder &&
+      !JS_DefineProperties(cx, ctor, constructorProperties)) {
+    return false;
   }
   if (const JSFunctionSpec* funs = clasp->specConstructorFunctions()) {
     if (!JS_DefineFunctions(cx, ctor, funs)) {
       return false;
     }
   }
-  if (const JSPropertySpec* props = clasp->specConstructorProperties()) {
-    if (!JS_DefineProperties(cx, ctor, props)) {
+  if (!commonRegExpOrder && constructorProperties) {
+    if (!JS_DefineProperties(cx, ctor, constructorProperties)) {
       return false;
     }
   }
 
   // If the prototype exists, link it with the constructor.
-  if (proto && !commonErrorOrder && !LinkConstructorAndPrototype(cx, ctor, proto)) {
+  if (proto && !commonErrorOrder && !commonRegExpOrder &&
+      !LinkConstructorAndPrototype(cx, ctor, proto)) {
     return false;
   }
 

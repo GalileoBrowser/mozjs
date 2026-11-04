@@ -429,6 +429,14 @@ bool GlobalObject::resolveConstructor(JSContext* cx,
   // prototype before installing legacy fields, and install escape last.
   if (commonRegExpOrder) {
     MOZ_ASSERT(proto);
+    // Materialize the native function's genuine length/name properties before
+    // linking its prototype or defining user-replaceable legacy fields. Leaving
+    // them lazy would append them during a later own-key enumeration.
+    RootedValue ignored(cx);
+    if (!JS_GetProperty(cx, ctor, "length", &ignored) ||
+        !JS_GetProperty(cx, ctor, "name", &ignored)) {
+      return false;
+    }
     if (!LinkConstructorAndPrototype(cx, ctor, proto)) {
       return false;
     }

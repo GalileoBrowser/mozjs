@@ -16,9 +16,11 @@
 #endif
 
 #include "assert.h"
+#include "js/BigInt.h"
 #include "js/BuildId.h"
 #include "js/Class.h"
 #include "js/ColumnNumber.h"
+#include "js/ErrorReport.h"
 #include "js/HeapAPI.h"
 #include "js/Id.h"
 #include "js/MemoryMetrics.h"
@@ -45,7 +47,13 @@
 #include "mozilla/Unused.h"
 
 #ifndef RUST_BINDGEN
+#  include "js/AllocPolicy.h"
+#  include "js/Array.h"
+#  include "js/PropertyAndElement.h"
+#  include "js/Vector.h"
 #  include "util/Text.h"
+#  include "vm/BigIntType.h"
+#  include "vm/ConversionFailure.h"
 #  include "vm/HelperThreads.h"
 #  include "vm/JSFunction.h"
 #  include "vm/JSScript.h"
@@ -662,6 +670,243 @@ bool ShouldMeasureObject(JSObject* obj, nsISupports** iface) {
 }
 
 extern "C" {
+
+// Arbitrary-precision Web IDL values cross the Rust boundary as sign and
+// little-endian 64-bit words, independent of SpiderMonkey's native digit size.
+// Reading/copying a rooted BigInt cannot allocate or invoke JavaScript.
+size_t Servo_BigIntWordLength(const JS::BigInt* value);
+bool Servo_CopyBigIntWords(const JS::BigInt* value, uint64_t* words, size_t length);
+JS::BigInt* Servo_BigIntFromWords(JSContext* cx, bool negative,
+                                 const uint64_t* words, size_t length);
+
+// The caller roots input, output and diagnostic slots. Status 1 preserves an
+// already-reported failure. Other nonzero statuses describe the conversion's
+// own rejection before formatting an embedding-owned error.
+// 0 success; 1 already reported; 2 invalid primitive; 3 invalid string;
+// 4 non-callable primitive hook; 5 object hook result; 6 no ordinary primitive.
+uint32_t Servo_ToBigIntForWebIDL(JSContext* cx, const JS::Value* input,
+                                JS::Value* output, JS::Value* diagnostic);
+
+#ifndef RUST_BINDGEN
+uint32_t Servo_ToBigIntForWebIDL(JSContext* cx, const JS::Value* input,
+                                JS::Value* output, JS::Value* diagnostic) {
+  if (!cx || !input || !output || !diagnostic) {
+    if (cx) JS_ReportErrorASCII(cx, "Missing native BigInt conversion storage");
+    return 1;
+  }
+  JS::RootedValue value(cx, *input);
+  JS::RootedValue detail(cx);
+  js::BigIntConversionFailure failure;
+  JS::BigInt* result = js::ToBigIntWithFailure(cx, value, &failure, &detail);
+  if (result) {
+    output->setBigInt(result);
+    diagnostic->setUndefined();
+    return 0;
+  }
+  *diagnostic = detail.get();
+  switch (failure) {
+    case js::BigIntConversionFailure::None:
+      return 1;
+    case js::BigIntConversionFailure::InvalidPrimitive:
+      return 2;
+    case js::BigIntConversionFailure::InvalidString:
+      return 3;
+    case js::BigIntConversionFailure::MethodNotCallable:
+      return 4;
+    case js::BigIntConversionFailure::MethodReturnedObject:
+      return 5;
+    case js::BigIntConversionFailure::OrdinaryConversionFailed:
+      return 6;
+  }
+  MOZ_CRASH("Unknown native BigInt conversion failure");
+}
+
+size_t Servo_BigIntWordLength(const JS::BigInt* value) {
+  static_assert(sizeof(JS::BigInt::Digit) == sizeof(uint32_t) ||
+                sizeof(JS::BigInt::Digit) == sizeof(uint64_t));
+  if (!value) return 0;
+  if constexpr (sizeof(JS::BigInt::Digit) == sizeof(uint64_t)) {
+    return value->digitLength();
+  } else {
+    return (value->digitLength() + 1) / 2;
+  }
+}
+
+bool Servo_CopyBigIntWords(const JS::BigInt* value, uint64_t* words, size_t length) {
+  if (!value || length != Servo_BigIntWordLength(value) ||
+      (length && !words)) {
+    return false;
+  }
+  for (size_t index = 0; index < length; ++index) {
+    if constexpr (sizeof(JS::BigInt::Digit) == sizeof(uint64_t)) {
+      words[index] = value->digit(index);
+    } else {
+      const size_t low = index * 2;
+      words[index] = uint64_t(value->digit(low));
+      if (low + 1 < value->digitLength()) {
+        words[index] |= uint64_t(value->digit(low + 1)) << 32;
+      }
+    }
+  }
+  return true;
+}
+
+JS::BigInt* Servo_BigIntFromWords(JSContext* cx, bool negative,
+                                 const uint64_t* words, size_t length) {
+  if (length && !words) {
+    JS_ReportErrorASCII(cx, "Missing native BigInt word storage");
+    return nullptr;
+  }
+  while (length && words[length - 1] == 0) --length;
+  size_t digits = length;
+  if constexpr (sizeof(JS::BigInt::Digit) == sizeof(uint32_t)) {
+    if (length > SIZE_MAX / 2) {
+      JS_ReportAllocationOverflow(cx);
+      return nullptr;
+    }
+    digits = length * 2;
+    if (length && !(words[length - 1] >> 32)) --digits;
+  }
+  // The VM applies its real allocation/size limits and reports failures;
+  // no modulo-64 conversion or precision-losing Number is involved.
+  JS::BigInt* result = JS::BigInt::createUninitialized(cx, digits, negative && digits);
+  if (!result) return nullptr;
+  for (size_t index = 0; index < digits; ++index) {
+    if constexpr (sizeof(JS::BigInt::Digit) == sizeof(uint64_t)) {
+      result->setDigit(index, JS::BigInt::Digit(words[index]));
+    } else {
+      result->setDigit(index, JS::BigInt::Digit(words[index / 2] >> ((index % 2) * 32)));
+    }
+  }
+  return result;
+}
+#endif
+
+// Standalone native BigInt regression access. Only its explicit unit-test
+// installer adds these functions to a global; production startup never calls it.
+bool InstallNativeBigIntTestFunctions(JSContext* cx, JSObject* global);
+
+#ifndef RUST_BINDGEN
+static bool NativeBigIntConversionForTest(JSContext* cx, unsigned argc,
+                                          JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedValue input(cx, args.get(0));
+  JS::RootedValue output(cx);
+  JS::RootedValue diagnostic(cx);
+  uint32_t status = Servo_ToBigIntForWebIDL(cx, input.address(),
+                                           output.address(), diagnostic.address());
+  if (status == 1) return false;
+  MOZ_ASSERT(!JS_IsExceptionPending(cx));
+  if (args.get(1).isBoolean() && args[1].toBoolean()) {
+    JS_GC(cx, JS::GCReason::API);
+  }
+  JS::RootedObject result(cx, JS::NewArrayObject(cx, 3));
+  JS::RootedValue statusValue(cx, JS::Int32Value(status));
+  if (!result ||
+      !JS_DefineElement(cx, result, 0, statusValue, JSPROP_ENUMERATE) ||
+      !JS_DefineElement(cx, result, 1, output, JSPROP_ENUMERATE) ||
+      !JS_DefineElement(cx, result, 2, diagnostic, JSPROP_ENUMERATE)) {
+    return false;
+  }
+  args.rval().setObject(*result);
+  return true;
+}
+
+static bool NativeBigIntWordsForTest(JSContext* cx, unsigned argc,
+                                     JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.get(0).isBigInt()) {
+    JS_ReportErrorASCII(cx, "Native word test requires an actual BigInt");
+    return false;
+  }
+  JS::RootedBigInt value(cx, args[0].toBigInt());
+  if (args.get(1).isBoolean() && args[1].toBoolean()) {
+    JS_GC(cx, JS::GCReason::API);
+  }
+  size_t length = Servo_BigIntWordLength(value);
+  js::Vector<uint64_t, 0, js::SystemAllocPolicy> words;
+  if (!words.resize(length)) {
+    JS_ReportOutOfMemory(cx);
+    return false;
+  }
+  if (!Servo_CopyBigIntWords(value, words.begin(), words.length())) {
+    JS_ReportErrorASCII(cx, "Native word test copy failed");
+    return false;
+  }
+  JS::RootedObject result(cx, JS::NewArrayObject(cx, 2));
+  if (!result) return false;
+  JS::RootedObject array(cx, JS::NewArrayObject(cx, length));
+  if (!array) return false;
+  JS::RootedValue sign(cx, JS::BooleanValue(value->isNegative()));
+  JS::RootedValue item(cx);
+  if (!JS_DefineElement(cx, result, 0, sign, JSPROP_ENUMERATE)) return false;
+  for (size_t index = 0; index < length; ++index) {
+    JS::RootedBigInt word(cx, JS::NumberToBigInt(cx, words[index]));
+    if (!word) return false;
+    item.setBigInt(word);
+    if (!JS_DefineElement(cx, array, index, item, JSPROP_ENUMERATE)) return false;
+  }
+  item.setObject(*array);
+  if (!JS_DefineElement(cx, result, 1, item, JSPROP_ENUMERATE)) return false;
+  args.rval().setObject(*result);
+  return true;
+}
+
+static bool NativeBigIntFromWordsForTest(JSContext* cx, unsigned argc,
+                                         JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.get(0).isBoolean() || !args.get(1).isObject()) {
+    JS_ReportErrorASCII(cx, "Native word reconstruction requires sign and array");
+    return false;
+  }
+  JS::RootedObject array(cx, &args[1].toObject());
+  uint32_t length;
+  if (!JS::GetArrayLength(cx, array, &length)) return false;
+  js::Vector<uint64_t, 0, js::SystemAllocPolicy> words;
+  if (!words.resize(length)) {
+    JS_ReportOutOfMemory(cx);
+    return false;
+  }
+  JS::RootedValue item(cx);
+  for (uint32_t index = 0; index < length; ++index) {
+    if (!JS_GetElement(cx, array, index, &item)) return false;
+    if (!item.isBigInt() || item.toBigInt()->isNegative() ||
+        Servo_BigIntWordLength(item.toBigInt()) > 1) {
+      JS_ReportErrorASCII(cx, "Native test words must be unsigned 64-bit BigInts");
+      return false;
+    }
+    words[index] = JS::ToBigUint64(item.toBigInt());
+  }
+  JS::RootedBigInt result(cx, Servo_BigIntFromWords(
+      cx, args[0].toBoolean(), words.begin(), words.length()));
+  if (!result) return false;
+  if (args.get(2).isBoolean() && args[2].toBoolean()) {
+    JS_GC(cx, JS::GCReason::API);
+  }
+  args.rval().setBigInt(result);
+  return true;
+}
+
+static bool NativeBigIntGCForTest(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS_GC(cx, JS::GCReason::API);
+  args.rval().setUndefined();
+  return true;
+}
+
+bool InstallNativeBigIntTestFunctions(JSContext* cx, JSObject* global) {
+  if (!cx || !global) return false;
+  JS::RootedObject object(cx, global);
+  return JS_DefineFunction(cx, object, "nativeBigIntConversionForTest",
+                          NativeBigIntConversionForTest, 2, 0) &&
+         JS_DefineFunction(cx, object, "nativeBigIntWordsForTest",
+                          NativeBigIntWordsForTest, 2, 0) &&
+         JS_DefineFunction(cx, object, "nativeBigIntFromWordsForTest",
+                          NativeBigIntFromWordsForTest, 3, 0) &&
+         JS_DefineFunction(cx, object, "nativeBigIntGCForTest",
+                          NativeBigIntGCForTest, 0, 0);
+}
+#endif
 
 // Explicitly installed by a native unit test only, never browser startup.
 bool InstallNativeInvocationTestFunctions(JSContext* cx, JSObject* global);

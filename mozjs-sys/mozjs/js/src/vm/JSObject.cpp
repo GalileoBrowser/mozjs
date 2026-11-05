@@ -10,6 +10,7 @@
 
 #include "vm/JSObject-inl.h"
 #include "vm/NativeBuiltinMetadata.h"
+#include "vm/ConversionFailure.h"
 
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Try.h"
@@ -2359,8 +2360,9 @@ static bool ReportCantConvert(JSContext* cx, unsigned errorNumber,
   return false;
 }
 
-bool JS::OrdinaryToPrimitive(JSContext* cx, HandleObject obj, JSType hint,
-                             MutableHandleValue vp) {
+static bool OrdinaryToPrimitiveImpl(JSContext* cx, HandleObject obj, JSType hint,
+                                    MutableHandleValue vp,
+                                    PrimitiveConversionFailure* failure) {
   MOZ_ASSERT(hint == JSTYPE_NUMBER || hint == JSTYPE_STRING ||
              hint == JSTYPE_UNDEFINED);
 
@@ -2454,11 +2456,22 @@ bool JS::OrdinaryToPrimitive(JSContext* cx, HandleObject obj, JSType hint,
     }
   }
 
+  if (failure) {
+    *failure = PrimitiveConversionFailure::OrdinaryConversionFailed;
+    return false;
+  }
   return ReportCantConvert(cx, JSMSG_CANT_CONVERT_TO, obj, hint);
 }
 
-bool js::ToPrimitiveSlow(JSContext* cx, JSType preferredType,
-                         MutableHandleValue vp) {
+bool JS::OrdinaryToPrimitive(JSContext* cx, HandleObject obj, JSType hint,
+                             MutableHandleValue vp) {
+  return OrdinaryToPrimitiveImpl(cx, obj, hint, vp, nullptr);
+}
+
+static bool ToPrimitiveSlowImpl(JSContext* cx, JSType preferredType,
+                                MutableHandleValue vp,
+                                PrimitiveConversionFailure* failure,
+                                MutableHandleValue diagnostic) {
   // Step numbers refer to the first algorithm listed in ES6 draft rev 36
   // (2015 Mar 17) 7.1.1 ToPrimitive.
   MOZ_ASSERT(preferredType == JSTYPE_UNDEFINED ||
@@ -2477,6 +2490,11 @@ bool js::ToPrimitiveSlow(JSContext* cx, JSType preferredType,
     // Step 6 of GetMethod. js::Call() below would do this check and throw a
     // TypeError anyway, but this produces a better error message.
     if (!IsCallable(method)) {
+      if (failure) {
+        *failure = PrimitiveConversionFailure::MethodNotCallable;
+        diagnostic.set(method);
+        return false;
+      }
       return ReportCantConvert(cx, JSMSG_TOPRIMITIVE_NOT_CALLABLE, obj,
                                preferredType);
     }
@@ -2494,13 +2512,36 @@ bool js::ToPrimitiveSlow(JSContext* cx, JSType preferredType,
 
     // Steps 6.c-d.
     if (vp.isObject()) {
+      if (failure) {
+        *failure = PrimitiveConversionFailure::MethodReturnedObject;
+        return false;
+      }
       return ReportCantConvert(cx, JSMSG_TOPRIMITIVE_RETURNED_OBJECT, obj,
                                preferredType);
     }
     return true;
   }
 
-  return OrdinaryToPrimitive(cx, obj, preferredType, vp);
+  return OrdinaryToPrimitiveImpl(cx, obj, preferredType, vp, failure);
+}
+
+bool js::ToPrimitiveSlow(JSContext* cx, JSType preferredType,
+                         MutableHandleValue vp) {
+  RootedValue ignored(cx);
+  return ToPrimitiveSlowImpl(cx, preferredType, vp, nullptr, &ignored);
+}
+
+bool js::ToPrimitiveWithFailure(JSContext* cx, JSType preferredType,
+                                MutableHandleValue vp,
+                                PrimitiveConversionFailure* failure,
+                                MutableHandleValue diagnostic) {
+  MOZ_ASSERT(failure);
+  *failure = PrimitiveConversionFailure::None;
+  diagnostic.setUndefined();
+  if (vp.isPrimitive()) {
+    return true;
+  }
+  return ToPrimitiveSlowImpl(cx, preferredType, vp, failure, diagnostic);
 }
 
 /* ES6 draft rev 28 (2014 Oct 14) 7.1.14 */

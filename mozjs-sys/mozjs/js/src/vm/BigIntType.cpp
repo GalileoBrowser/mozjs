@@ -77,6 +77,7 @@
  */
 
 #include "vm/BigIntType.h"
+#include "vm/ConversionFailure.h"
 
 #include "mozilla/Casting.h"
 #include "mozilla/CheckedInt.h"
@@ -3227,11 +3228,33 @@ bool BigInt::bitNotValue(JSContext* cx, HandleValue operand,
 }
 
 // BigInt proposal section 7.3
-BigInt* js::ToBigInt(JSContext* cx, HandleValue val) {
+static BigInt* ToBigIntImpl(JSContext* cx, HandleValue val,
+                            BigIntConversionFailure* failure,
+                            MutableHandleValue diagnostic) {
   RootedValue v(cx, val);
 
-  // Step 1.
-  if (!ToPrimitive(cx, JSTYPE_NUMBER, &v)) {
+  // Step 1. Both entry points run the same native primitive algorithm. Only
+  // its own terminal failure is reported structurally by the Web IDL entry.
+  if (failure) {
+    PrimitiveConversionFailure primitiveFailure;
+    if (!ToPrimitiveWithFailure(cx, JSTYPE_NUMBER, &v, &primitiveFailure,
+                                diagnostic)) {
+      switch (primitiveFailure) {
+        case PrimitiveConversionFailure::None:
+          return nullptr;  // Existing authored exception, OOM or interruption.
+        case PrimitiveConversionFailure::MethodNotCallable:
+          *failure = BigIntConversionFailure::MethodNotCallable;
+          return nullptr;
+        case PrimitiveConversionFailure::MethodReturnedObject:
+          *failure = BigIntConversionFailure::MethodReturnedObject;
+          return nullptr;
+        case PrimitiveConversionFailure::OrdinaryConversionFailed:
+          *failure = BigIntConversionFailure::OrdinaryConversionFailed;
+          return nullptr;
+      }
+      MOZ_CRASH("Unknown native primitive conversion failure");
+    }
+  } else if (!ToPrimitive(cx, JSTYPE_NUMBER, &v)) {
     return nullptr;
   }
 
@@ -3249,6 +3272,11 @@ BigInt* js::ToBigInt(JSContext* cx, HandleValue val) {
     BigInt* bi;
     JS_TRY_VAR_OR_RETURN_NULL(cx, bi, StringToBigInt(cx, str));
     if (!bi) {
+      if (failure) {
+        *failure = BigIntConversionFailure::InvalidString;
+        diagnostic.set(v);
+        return nullptr;
+      }
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_BIGINT_INVALID_SYNTAX);
       return nullptr;
@@ -3256,9 +3284,28 @@ BigInt* js::ToBigInt(JSContext* cx, HandleValue val) {
     return bi;
   }
 
+  if (failure) {
+    *failure = BigIntConversionFailure::InvalidPrimitive;
+    diagnostic.set(v);
+    return nullptr;
+  }
   ReportValueError(cx, JSMSG_CANT_CONVERT_TO, JSDVG_IGNORE_STACK, v, nullptr,
                    "BigInt");
   return nullptr;
+}
+
+BigInt* js::ToBigInt(JSContext* cx, HandleValue val) {
+  RootedValue ignored(cx);
+  return ToBigIntImpl(cx, val, nullptr, &ignored);
+}
+
+BigInt* js::ToBigIntWithFailure(JSContext* cx, HandleValue val,
+                               BigIntConversionFailure* failure,
+                               MutableHandleValue diagnostic) {
+  MOZ_ASSERT(failure);
+  *failure = BigIntConversionFailure::None;
+  diagnostic.setUndefined();
+  return ToBigIntImpl(cx, val, failure, diagnostic);
 }
 
 JS::Result<int64_t> js::ToBigInt64(JSContext* cx, HandleValue v) {

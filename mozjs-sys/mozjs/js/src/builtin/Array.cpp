@@ -31,6 +31,7 @@
 #include "js/experimental/JitInfo.h"  // JSJitGetterOp, JSJitInfo
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/PropertySpec.h"
+#include "proxy/ScriptedProxyHandler.h"
 #include "util/Poison.h"
 #include "util/StringBuilder.h"
 #include "util/Text.h"
@@ -143,8 +144,7 @@ bool JS::IsArray(JSContext* cx, HandleObject obj, bool* isArray) {
   }
 
   if (answer == IsArrayAnswer::RevokedProxy) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::IsArray);
     return false;
   }
 

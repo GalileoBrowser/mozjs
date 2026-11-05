@@ -20,6 +20,7 @@
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
 #include "vm/PlainObject.h"  // js::PlainObject
+#include "vm/Realm.h"
 
 #include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
@@ -29,6 +30,75 @@ using namespace js;
 using JS::IsArrayAnswer;
 
 using mozilla::Maybe;
+
+static const JSErrorFormatString* GetRevokedProxyErrorMessage(void*,
+                                                            const unsigned) {
+  static constexpr JSErrorFormatString message = {
+      "JSMSG_V8_PROXY_REVOKED",
+      "Cannot perform '{0}' on a proxy that has been revoked", 1, JSEXN_TYPEERR};
+  return &message;
+}
+
+void js::ReportRevokedProxyError(JSContext* cx,
+                                RevokedProxyOperation operation) {
+  if (!cx->realm()->creationOptions().v8ErrorStackLimits()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_PROXY_REVOKED);
+    return;
+  }
+
+  const char* name;
+  switch (operation) {
+    case RevokedProxyOperation::GetPrototypeOf:
+      name = "getPrototypeOf";
+      break;
+    case RevokedProxyOperation::SetPrototypeOf:
+      name = "setPrototypeOf";
+      break;
+    case RevokedProxyOperation::PreventExtensions:
+      name = "preventExtensions";
+      break;
+    case RevokedProxyOperation::IsExtensible:
+      name = "isExtensible";
+      break;
+    case RevokedProxyOperation::GetOwnPropertyDescriptor:
+      name = "getOwnPropertyDescriptor";
+      break;
+    case RevokedProxyOperation::DefineProperty:
+      name = "defineProperty";
+      break;
+    case RevokedProxyOperation::OwnKeys:
+      name = "ownKeys";
+      break;
+    case RevokedProxyOperation::DeleteProperty:
+      name = "deleteProperty";
+      break;
+    case RevokedProxyOperation::Has:
+      name = "has";
+      break;
+    case RevokedProxyOperation::Get:
+      name = "get";
+      break;
+    case RevokedProxyOperation::Set:
+      name = "set";
+      break;
+    case RevokedProxyOperation::Apply:
+      name = "apply";
+      break;
+    case RevokedProxyOperation::Construct:
+      name = "construct";
+      break;
+    case RevokedProxyOperation::IsArray:
+      name = "IsArray";
+      break;
+    case RevokedProxyOperation::ObjectToString:
+      name = "Object.prototype.toString";
+      break;
+    default:
+      MOZ_CRASH("Unexpected native revoked proxy operation");
+  }
+  JS_ReportErrorNumberASCII(cx, GetRevokedProxyErrorMessage, nullptr, 0, name);
+}
 
 // ES2022 rev 33fe30f9a6b0dc81826f2f217167a89c025779a0
 // IsCompatiblePropertyDescriptor. BUT that method just calls
@@ -218,8 +288,7 @@ bool ScriptedProxyHandler::getPrototype(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::GetPrototypeOf);
     return false;
   }
 
@@ -297,8 +366,7 @@ bool ScriptedProxyHandler::setPrototype(JSContext* cx, HandleObject proxy,
   // Steps 1-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::SetPrototypeOf);
     return false;
   }
 
@@ -395,8 +463,7 @@ bool ScriptedProxyHandler::preventExtensions(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::PreventExtensions);
     return false;
   }
 
@@ -456,8 +523,7 @@ bool ScriptedProxyHandler::isExtensible(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::IsExtensible);
     return false;
   }
 
@@ -514,8 +580,7 @@ bool ScriptedProxyHandler::getOwnPropertyDescriptor(
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::GetOwnPropertyDescriptor);
     return false;
   }
 
@@ -643,8 +708,7 @@ bool ScriptedProxyHandler::defineProperty(JSContext* cx, HandleObject proxy,
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::DefineProperty);
     return false;
   }
 
@@ -814,8 +878,7 @@ bool ScriptedProxyHandler::ownPropertyKeys(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::OwnKeys);
     return false;
   }
 
@@ -961,8 +1024,7 @@ bool ScriptedProxyHandler::delete_(JSContext* cx, HandleObject proxy,
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::DeleteProperty);
     return false;
   }
 
@@ -1039,8 +1101,7 @@ bool ScriptedProxyHandler::has(JSContext* cx, HandleObject proxy, HandleId id,
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::Has);
     return false;
   }
 
@@ -1114,8 +1175,7 @@ bool ScriptedProxyHandler::get(JSContext* cx, HandleObject proxy,
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::Get);
     return false;
   }
 
@@ -1226,8 +1286,7 @@ bool ScriptedProxyHandler::set(JSContext* cx, HandleObject proxy, HandleId id,
   // Steps 2-4.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::Set);
     return false;
   }
 
@@ -1310,8 +1369,7 @@ bool ScriptedProxyHandler::call(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::Apply);
     return false;
   }
 
@@ -1361,8 +1419,7 @@ bool ScriptedProxyHandler::construct(JSContext* cx, HandleObject proxy,
   // Steps 1-3.
   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
   if (!handler) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_PROXY_REVOKED);
+    ReportRevokedProxyError(cx, RevokedProxyOperation::Construct);
     return false;
   }
 

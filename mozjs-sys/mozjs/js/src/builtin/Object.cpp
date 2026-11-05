@@ -24,6 +24,7 @@
 #include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #include "js/PropertySpec.h"
 #include "js/UniquePtr.h"
+#include "proxy/ScriptedProxyHandler.h"
 #include "util/Identifier.h"  // js::IsIdentifier
 #include "util/StringBuilder.h"
 #include "util/Text.h"
@@ -521,13 +522,17 @@ JSString* js::ObjectToSource(JSContext* cx, HandleObject obj) {
 
 static JSString* GetBuiltinTagSlow(JSContext* cx, HandleObject obj) {
   // Step 4.
-  bool isArray;
-  if (!IsArray(cx, obj, &isArray)) {
+  JS::IsArrayAnswer answer;
+  if (!JS::IsArray(cx, obj, &answer)) {
+    return nullptr;
+  }
+  if (answer == JS::IsArrayAnswer::RevokedProxy) {
+    ReportRevokedProxyError(cx, RevokedProxyOperation::ObjectToString);
     return nullptr;
   }
 
   // Step 5.
-  if (isArray) {
+  if (answer == JS::IsArrayAnswer::Array) {
     return cx->names().object_Array_;
   }
 

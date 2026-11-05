@@ -11,6 +11,28 @@
 
 namespace js {
 
+// The operation is supplied by the native failure site, never by script.
+// The current realm's creation policy selects the native diagnostic family.
+enum class RevokedProxyOperation {
+  GetPrototypeOf,
+  SetPrototypeOf,
+  PreventExtensions,
+  IsExtensible,
+  GetOwnPropertyDescriptor,
+  DefineProperty,
+  OwnKeys,
+  DeleteProperty,
+  Has,
+  Get,
+  Set,
+  Apply,
+  Construct,
+  IsArray,
+  ObjectToString,
+};
+
+void ReportRevokedProxyError(JSContext* cx, RevokedProxyOperation operation);
+
 /* Derived class for all scripted proxy handlers. */
 class ScriptedProxyHandler : public NurseryAllocableProxyHandler {
  public:

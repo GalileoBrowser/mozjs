@@ -51,6 +51,7 @@
 #include "vm/JSContext.h"
 #include "vm/NativeBuiltinMetadata.h"
 #include "vm/JSObject.h"
+#include "vm/NativeInvocation.h"
 #include "vm/JSScript.h"
 #include "vm/Realm.h"
 #include "vm/SavedFrame.h"
@@ -66,6 +67,7 @@
 #include "vm/JSContext-inl.h"
 #include "vm/JSObject-inl.h"
 #include "vm/ObjectOperations-inl.h"  // js::GetProperty
+#include "vm/Realm-inl.h"
 #include "vm/SavedStacks-inl.h"
 
 using namespace js;
@@ -317,6 +319,13 @@ bool js::ErrorToException(JSContext* cx, JSErrorReport* reportp,
   if (cx->generatingError) {
     return false;
   }
+
+  // A wrapper's temporary compartment entry does not start an ECMAScript
+  // execution context. Create our own error in the initiating operation's
+  // realm, unless script/native re-entry has started another operation.
+  // Authored throws and rethrows do not pass through this creation path.
+  RootedObject operationGlobal(cx, NativeOperationErrorGlobal(cx));
+  AutoRealm operationRealm(cx, operationGlobal);
 
   cx->generatingError = true;
   auto restore = mozilla::MakeScopeExit([cx] { cx->generatingError = false; });

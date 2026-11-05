@@ -20,6 +20,7 @@
 #include "js/Value.h"                 // JS::Value
 #include "vm/FrameIter.h"             // js::FrameIter
 #include "vm/JSContext.h"
+#include "vm/NativeInvocation.h"
 #include "wasm/WasmProcess.h"
 
 #include "jit/JSJitFrameIter-inl.h"
@@ -236,8 +237,7 @@ bool InterpreterFrame::checkReturn(JSContext* cx, HandleValue thisv,
   }
 
   if (!retVal.isUndefined()) {
-    ReportValueError(cx, JSMSG_BAD_DERIVED_RETURN, JSDVG_IGNORE_STACK, retVal,
-                     nullptr);
+    ReportBadDerivedReturn(cx, retVal);
     return false;
   }
 

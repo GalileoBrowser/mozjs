@@ -6,6 +6,8 @@
 #include <algorithm>
 #include "jit/JSJitFrameIter.h"
 #include "jit/JitFrames.h"
+#include "js/friend/ErrorMessages.h"
+#include "vm/BoundFunctionObject.h"
 #include "vm/EqualityOperations.h"
 #include "vm/FrameIter.h"
 #include "vm/JSContext.h"
@@ -17,10 +19,115 @@
 
 using namespace js;
 
+// These scoped chains live on the executing thread, not in the JSContext ABI.
+// Entries are C++ stack objects and are always removed before their roots die.
+static thread_local AutoNativeInvocation* nativeBoundaryTop = nullptr;
+static thread_local AutoNativeOperationRealm* operationRealmTop = nullptr;
+static thread_local AutoNativeConstructorRealm* constructorRealmTop = nullptr;
+
+static NativeOperationBoundary CurrentOperationBoundary(JSContext* cx) {
+  NativeOperationBoundary result;
+  result.native = nativeBoundaryTop;
+  result.activation = cx->activation();
+  if (result.activation) {
+    // Entry into script from these C++ operations creates an activation;
+    // interpreter inline calls change current(), and JIT fast native calls
+    // change the packed exit. All three restore their prior value on return.
+    // No stack walk, allocation or authored property read on successful MOPs.
+    result.frame = result.activation->isInterpreter()
+                       ? static_cast<const void*>(result.activation->asInterpreter()->current())
+                       : static_cast<const void*>(result.activation->asJit()->packedExitFP());
+  }
+  return result;
+}
+
+bool NativeOperationBoundary::operator==(const NativeOperationBoundary& other) const {
+  return activation == other.activation && frame == other.frame && native == other.native;
+}
+
+AutoNativeOperationRealm::AutoNativeOperationRealm(JSContext* cx)
+    : context_(cx), previous_(operationRealmTop),
+      originGlobal_(cx, cx->realm() ? cx->global() : nullptr),
+      boundary_(CurrentOperationBoundary(cx)) {
+  if (previous_ && previous_->context_ == cx && previous_->boundary_ == boundary_) {
+    originGlobal_ = previous_->originGlobal_;
+  }
+  operationRealmTop = this;
+}
+
+AutoNativeOperationRealm::~AutoNativeOperationRealm() {
+  MOZ_ASSERT(operationRealmTop == this);
+  operationRealmTop = previous_;
+}
+
+void AutoNativeOperationRealm::resetForFunctionEntry() {
+  MOZ_ASSERT(operationRealmTop == this);
+  originGlobal_ = context_->global();
+  boundary_ = CurrentOperationBoundary(context_);
+}
+
+JSObject* js::NativeOperationErrorGlobal(JSContext* cx) {
+  auto* scope = operationRealmTop;
+  if (scope && scope->context_ == cx && scope->originGlobal_ &&
+      scope->boundary_ == CurrentOperationBoundary(cx)) {
+    return scope->originGlobal_;
+  }
+  return cx->global();
+}
+
+AutoNativeConstructorRealm::AutoNativeConstructorRealm(JSContext* cx)
+    : context_(cx), previous_(constructorRealmTop),
+      caller_(CurrentOperationBoundary(cx)),
+      callerGlobal_(cx, NativeOperationErrorGlobal(cx)), operation_(cx) {
+  constructorRealmTop = this;
+}
+
+AutoNativeConstructorRealm::~AutoNativeConstructorRealm() {
+  MOZ_ASSERT(constructorRealmTop == this);
+  constructorRealmTop = previous_;
+}
+
+void AutoNativeConstructorRealm::enterCallee() {
+  if (!context_->realm()->creationOptions().v8ErrorStackLimits()) {
+    operation_.resetForFunctionEntry();
+  }
+}
+
+JSObject* js::NativeConstructorCallerGlobal(JSContext* cx) {
+  FrameIter caller(cx);
+  // This is only queried at the engine's derived-return failure, while the
+  // derived constructor's frame is still present. Keep logical Ion inline
+  // frames, so a recursively invoked constructor does not borrow an older
+  // C++ entry's native caller context.
+  if (!caller.done()) ++caller;
+  auto* scope = constructorRealmTop;
+  Activation* activation = caller.done() ? nullptr : caller.activation();
+  if (scope && scope->context_ == cx &&
+      scope->caller_.activation == activation &&
+      scope->caller_.native == nativeBoundaryTop) {
+    return scope->callerGlobal_;
+  }
+  return caller.done() ? cx->global() : caller.realm()->maybeGlobal();
+}
+
+void js::ReportBadDerivedReturn(JSContext* cx, JS::HandleValue value) {
+  RootedObject global(cx, cx->realm()->creationOptions().v8ErrorStackLimits()
+                            ? NativeConstructorCallerGlobal(cx) : cx->global());
+  AutoRealm realm(cx, global);
+  AutoNativeOperationRealm errorRealm(cx);
+  errorRealm.resetForFunctionEntry();
+  ReportValueError(cx, JSMSG_BAD_DERIVED_RETURN, JSDVG_IGNORE_STACK, value, nullptr);
+}
+
 AutoNativeInvocation::AutoNativeInvocation(JSContext* cx, const JS::CallArgs& args,
                                          NativeInvocationPath path)
     : context_(cx), callee_(cx, &args.callee()), receiver_(cx, args.thisv()),
       arguments_(args.base()), path_(path), constructing_(args.isConstructing()) {
+  previousBoundary_ = nativeBoundaryTop;
+  // Bound exotic [[Call]]/[[Construct]] forward without creating a new
+  // ECMAScript execution context. Keep legacy stack capture independent.
+  boundaryLinked_ = !args.callee().is<BoundFunctionObject>();
+  if (boundaryLinked_) nativeBoundaryTop = this;
   if (!cx->realm()->creationOptions().v8ErrorStackLimits()) return;
   FrameIter caller(cx);
   if (!caller.done()) {
@@ -35,6 +142,12 @@ AutoNativeInvocation::AutoNativeInvocation(JSContext* cx, const JS::CallArgs& ar
 }
 
 AutoNativeInvocation::~AutoNativeInvocation() {
+  if (boundaryLinked_) {
+    MOZ_ASSERT(nativeBoundaryTop == this);
+    nativeBoundaryTop = previousBoundary_;
+  } else {
+    MOZ_ASSERT(nativeBoundaryTop == previousBoundary_);
+  }
   if (linked_) {
     MOZ_ASSERT(context_->nativeInvocationTop == this);
     context_->nativeInvocationTop = previous_;

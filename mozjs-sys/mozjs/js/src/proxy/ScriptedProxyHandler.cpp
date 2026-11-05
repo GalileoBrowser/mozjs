@@ -19,11 +19,13 @@
 #include "vm/Interpreter.h"           // js::Call
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
+#include "vm/NativeInvocation.h"
 #include "vm/PlainObject.h"  // js::PlainObject
 #include "vm/Realm.h"
 
 #include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
+#include "vm/Realm-inl.h"
 
 using namespace js;
 
@@ -41,6 +43,8 @@ static const JSErrorFormatString* GetRevokedProxyErrorMessage(void*,
 
 void js::ReportRevokedProxyError(JSContext* cx,
                                 RevokedProxyOperation operation) {
+  RootedObject operationGlobal(cx, NativeOperationErrorGlobal(cx));
+  AutoRealm operationRealm(cx, operationGlobal);
   if (!cx->realm()->creationOptions().v8ErrorStackLimits()) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_PROXY_REVOKED);

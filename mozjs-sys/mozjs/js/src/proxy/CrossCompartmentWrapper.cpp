@@ -13,6 +13,7 @@
 #include "proxy/DeadObjectProxy.h"
 #include "proxy/DOMProxy.h"
 #include "vm/Iteration.h"
+#include "vm/NativeInvocation.h"
 #include "vm/Runtime.h"
 #include "vm/WrapperObject.h"
 
@@ -25,6 +26,7 @@ using namespace js;
 
 #define PIERCE(cx, wrapper, pre, op, post)        \
   JS_BEGIN_MACRO                                  \
+    AutoNativeOperationRealm operationRealm(cx);  \
     bool ok;                                      \
     {                                             \
       AutoRealm call(cx, wrappedObject(wrapper)); \
@@ -79,6 +81,7 @@ bool CrossCompartmentWrapper::delete_(JSContext* cx, HandleObject wrapper,
 
 bool CrossCompartmentWrapper::getPrototype(JSContext* cx, HandleObject wrapper,
                                            MutableHandleObject protop) const {
+  AutoNativeOperationRealm operationRealm(cx);
   {
     RootedObject wrapped(cx, wrappedObject(wrapper));
     AutoRealm call(cx, wrapped);
@@ -101,6 +104,7 @@ bool CrossCompartmentWrapper::setPrototype(JSContext* cx, HandleObject wrapper,
 bool CrossCompartmentWrapper::getPrototypeIfOrdinary(
     JSContext* cx, HandleObject wrapper, bool* isOrdinary,
     MutableHandleObject protop) const {
+  AutoNativeOperationRealm operationRealm(cx);
   {
     RootedObject wrapped(cx, wrappedObject(wrapper));
     AutoRealm call(cx, wrapped);
@@ -170,6 +174,7 @@ static bool WrapReceiver(JSContext* cx, HandleObject wrapper,
 bool CrossCompartmentWrapper::get(JSContext* cx, HandleObject wrapper,
                                   HandleValue receiver, HandleId id,
                                   MutableHandleValue vp) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedValue receiverCopy(cx, receiver);
   {
     AutoRealm call(cx, wrappedObject(wrapper));
@@ -211,6 +216,7 @@ bool CrossCompartmentWrapper::enumerate(JSContext* cx, HandleObject wrapper,
 
 bool CrossCompartmentWrapper::call(JSContext* cx, HandleObject wrapper,
                                    const CallArgs& args) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedObject wrapped(cx, wrappedObject(wrapper));
 
   {
@@ -237,6 +243,7 @@ bool CrossCompartmentWrapper::call(JSContext* cx, HandleObject wrapper,
 
 bool CrossCompartmentWrapper::construct(JSContext* cx, HandleObject wrapper,
                                         const CallArgs& args) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedObject wrapped(cx, wrappedObject(wrapper));
   {
     AutoRealm call(cx, wrapped);
@@ -259,6 +266,7 @@ bool CrossCompartmentWrapper::construct(JSContext* cx, HandleObject wrapper,
 bool CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test,
                                          NativeImpl impl,
                                          const CallArgs& srcArgs) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedObject wrapper(cx, &srcArgs.thisv().toObject());
   MOZ_ASSERT(srcArgs.thisv().isMagic(JS_IS_CONSTRUCTING) ||
              !UncheckedUnwrap(wrapper)->is<CrossCompartmentWrapperObject>());
@@ -308,6 +316,7 @@ bool CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test,
 
 const char* CrossCompartmentWrapper::className(JSContext* cx,
                                                HandleObject wrapper) const {
+  AutoNativeOperationRealm operationRealm(cx);
   AutoRealm call(cx, wrappedObject(wrapper));
   return Wrapper::className(cx, wrapper);
 }
@@ -315,6 +324,7 @@ const char* CrossCompartmentWrapper::className(JSContext* cx,
 JSString* CrossCompartmentWrapper::fun_toString(JSContext* cx,
                                                 HandleObject wrapper,
                                                 bool isToSource) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedString str(cx);
   {
     AutoRealm call(cx, wrappedObject(wrapper));
@@ -331,6 +341,7 @@ JSString* CrossCompartmentWrapper::fun_toString(JSContext* cx,
 
 RegExpShared* CrossCompartmentWrapper::regexp_toShared(
     JSContext* cx, HandleObject wrapper) const {
+  AutoNativeOperationRealm operationRealm(cx);
   RootedRegExpShared re(cx);
   {
     AutoRealm call(cx, wrappedObject(wrapper));

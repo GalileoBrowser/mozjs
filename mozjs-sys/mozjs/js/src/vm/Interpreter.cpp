@@ -499,6 +499,13 @@ MOZ_ALWAYS_INLINE bool CallJSNative(JSContext* cx, Native native,
   cx->check(args);
   MOZ_ASSERT(!args.callee().is<ProxyObject>());
 
+  // Bound functions forward to their target without starting an execution
+  // context. The native ABI still needs the callee's compartment below;
+  // preserve the caller realm for engine-owned failures during forwarding.
+  mozilla::Maybe<AutoNativeOperationRealm> forwardingRealm;
+  if (args.callee().is<BoundFunctionObject>()) {
+    forwardingRealm.emplace(cx);
+  }
   AutoRealm ar(cx, &args.callee());
   AutoNativeInvocation invocation(cx, args);
   bool ok = native(cx, args.length(), args.base());
@@ -615,15 +622,21 @@ bool js::InternalCallOrConstruct(JSContext* cx, const CallArgs& args,
   /* Run function until JSOp::RetRval, JSOp::Return or error. */
   InvokeState state(cx, args, construct);
 
+  mozilla::Maybe<AutoNativeConstructorRealm> constructorRealm;
+  if (construct) constructorRealm.emplace(cx);
+
   // Create |this| if we're constructing. Switch to the callee's realm to
   // ensure this object has the correct realm.
   AutoRealm ar(cx, state.script());
+  if (constructorRealm) constructorRealm->enterCallee();
   if (construct && !MaybeCreateThisForConstructor(cx, args)) {
     return false;
   }
 
   // Calling class constructors throws an error from the callee's realm.
   if (construct != CONSTRUCT && fun->isClassConstructor()) {
+    AutoNativeOperationRealm classErrorRealm(cx);
+    classErrorRealm.resetForFunctionEntry();
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_CANT_CALL_CLASS_CONSTRUCTOR);
     return false;

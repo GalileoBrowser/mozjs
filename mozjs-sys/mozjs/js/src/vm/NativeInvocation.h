@@ -27,6 +27,9 @@ enum class NativeInvocationPath { Interpreter, Getter, Setter };
 class MOZ_RAII AutoNativeInvocation {
   JSContext* context_;
   AutoNativeInvocation* previous_ = nullptr;
+  // Execution boundary only; unlike nativeInvocationTop this is active for
+  // every realm policy and does not expose or capture Chrome stack features.
+  AutoNativeInvocation* previousBoundary_ = nullptr;
   JS::RootedObject callee_;
   JS::RootedValue receiver_;
   const JS::Value* arguments_;
@@ -35,6 +38,7 @@ class MOZ_RAII AutoNativeInvocation {
   bool constructing_;
   bool linked_ = false;
   bool delegated_ = false;
+  bool boundaryLinked_ = false;
 
  public:
   AutoNativeInvocation(JSContext* cx, const JS::CallArgs& args,
@@ -53,6 +57,61 @@ class MOZ_RAII AutoNativeInvocation {
   bool delegated() const { return delegated_; }
   void setDelegated(bool value) { delegated_ = value; }
 };
+
+// Cross-compartment forwarding is an implementation detail, not a new JS
+// execution context. Its own native errors belong to the initiating operation.
+// A real script/native callback starts a different operation, even when it
+// happens to re-enter the same realm. Compare live execution boundaries,
+// never authored function names, prototypes, or public constructor properties.
+struct NativeOperationBoundary {
+  Activation* activation = nullptr;
+  const void* frame = nullptr;
+  const void* native = nullptr;
+  bool operator==(const NativeOperationBoundary& other) const;
+};
+
+class MOZ_RAII AutoNativeOperationRealm {
+  JSContext* context_;
+  AutoNativeOperationRealm* previous_;
+  JS::RootedObject originGlobal_;
+  NativeOperationBoundary boundary_;
+
+ public:
+  explicit AutoNativeOperationRealm(JSContext* cx);
+  ~AutoNativeOperationRealm();
+  void resetForFunctionEntry();
+  AutoNativeOperationRealm(const AutoNativeOperationRealm&) = delete;
+  AutoNativeOperationRealm& operator=(const AutoNativeOperationRealm&) = delete;
+
+  friend JSObject* NativeOperationErrorGlobal(JSContext* cx);
+};
+
+// Only used while creating an engine-owned failure. This must not copy,
+// replace, reformat or otherwise alter an exception thrown by authored code.
+JSObject* NativeOperationErrorGlobal(JSContext* cx);
+
+// Preserve the native caller context even when construction enters script
+// through an implementation-only compartment switch. Firefox prepares `this`
+// in the callee realm; Chrome retains the caller for pre-body failures.
+class MOZ_RAII AutoNativeConstructorRealm {
+  JSContext* context_;
+  AutoNativeConstructorRealm* previous_;
+  NativeOperationBoundary caller_;
+  JS::RootedObject callerGlobal_;
+  AutoNativeOperationRealm operation_;
+
+ public:
+  explicit AutoNativeConstructorRealm(JSContext* cx);
+  ~AutoNativeConstructorRealm();
+  void enterCallee();
+  AutoNativeConstructorRealm(const AutoNativeConstructorRealm&) = delete;
+  AutoNativeConstructorRealm& operator=(const AutoNativeConstructorRealm&) = delete;
+
+  friend JSObject* NativeConstructorCallerGlobal(JSContext* cx);
+};
+
+JSObject* NativeConstructorCallerGlobal(JSContext* cx);
+void ReportBadDerivedReturn(JSContext* cx, JS::HandleValue value);
 
 class MOZ_RAII AutoNativeTrampolineInvocation {
   JSContext* cx_;

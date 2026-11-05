@@ -1536,8 +1536,7 @@ bool ThrowBadDerivedReturnOrUninitializedThis(JSContext* cx, HandleValue v) {
     return js::ThrowUninitializedThis(cx);
   }
 
-  ReportValueError(cx, JSMSG_BAD_DERIVED_RETURN, JSDVG_IGNORE_STACK, v,
-                   nullptr);
+  ReportBadDerivedReturn(cx, v);
   return false;
 }
 

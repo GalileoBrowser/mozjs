@@ -5,6 +5,7 @@
 #define __STDC_LIMIT_MACROS
 #include <stdint.h>
 
+#include <atomic>
 #include <type_traits>
 #include <utility>
 
@@ -42,6 +43,7 @@
 #include "js/friend/ErrorMessages.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/Unused.h"
 
 #ifndef RUST_BINDGEN
@@ -1236,6 +1238,32 @@ JSAutoStructuredCloneBuffer* NewJSAutoStructuredCloneBuffer(
 }
 
 void DeleteJSAutoStructuredCloneBuffer(JSAutoStructuredCloneBuffer* buf) {
+  if (!buf) {
+    return;
+  }
+
+  // Servo's Rust wrapper uses DifferentProcess buffers for both structured-
+  // clone writing and reading. Those buffers can contain page-provided data
+  // (including credentials and tokens) and are copied into a separate Rust
+  // wipe-on-drop allocation. Clear the native temporary before its allocator
+  // releases the BufferList segments. Other scopes can own same-process
+  // transferables whose cleanup needs the encoded bytes, so preserve their
+  // existing destruction path.
+  if (buf->scope() == JS::StructuredCloneScope::DifferentProcess) {
+    JSStructuredCloneData& data = buf->data();
+    JSStructuredCloneData::Iterator iter = data.Start();
+    while (!iter.Done()) {
+      volatile uint8_t* segment =
+          reinterpret_cast<volatile uint8_t*>(iter.Data());
+      const size_t segment_size = iter.RemainingInSegment();
+      for (size_t i = 0; i < segment_size; ++i) {
+        segment[i] = 0;
+      }
+      MOZ_RELEASE_ASSERT(data.Advance(iter, segment_size));
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
+
   js_delete(buf);
 }
 
@@ -1348,7 +1376,7 @@ struct DispatchablePointer {
 // The Galileo ABI sentinel is deliberately a link-time symbol rather than a
 // header-only constant. A consumer built with these bindings cannot silently
 // link an upstream libjsglue archive that predates the Galileo entry points.
-uint32_t GalileoMozjsGlueAbi_140_12_33() { return 0x008C0C21; }
+uint32_t GalileoMozjsGlueAbi_140_12_34() { return 0x008C0C22; }
 
 // Query an object's immutable realm policy without invoking script or unwrapping it.
 bool Servo_UsesCompactNativeFunctionSource(JSObject* object);

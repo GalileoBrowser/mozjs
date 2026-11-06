@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.3
+# Galileo SpiderMonkey glue ABI 140.12.4
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_3` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_4` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.3
+release tag: galileo-mozjs-glue-abi-140.12.4
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.3`.
+   `galileo-mozjs-glue-abi-140.12.4`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -112,3 +112,16 @@ sentinel and archive tag deliberately reject prebuilt 140.12.2 combinations.
 No new prebuilt platform archive, tag, release or cross-platform qualification
 is implied by a local Linux build. Build from the exact pinned source until
 the new release matrix has separately passed.
+
+## Structured-clone temporary buffer wiping
+
+ABI140.12.4 zeroes the used bytes of an owned `DifferentProcess`
+`JSAutoStructuredCloneBuffer` through volatile writes before the native
+`BufferList` segments are freed. Servo uses this scope for both writing a clone
+and reading bytes received over IPC. The Rust serialized-byte owner is wiped
+separately; this change covers the additional SpiderMonkey-owned staging copy.
+Same-process scopes keep their previous transfer cleanup behavior.
+
+The 140.12.3 prebuilt archives do not contain this wipe. Until a reviewed
+140.12.4 archive matrix is built and released, the ABI check must reject those
+archives and build from the exact pinned source.

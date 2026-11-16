@@ -1,4 +1,4 @@
-# Galileo SpiderMonkey glue ABI 140.12.34
+# Galileo SpiderMonkey glue ABI 140.12.35
 
 This branch extends the exact `mozjs 0.20.0` / `mozjs_sys 140.12.0-2`
 source state at commit `f5cbf8aa6` without changing SpiderMonkey or its public
@@ -6,7 +6,7 @@ Rust API version. It moves Galileo's ownership, proxy, isolated-realm, JIT
 teardown, and WebAssembly preference helpers into the same `libjsglue` archive
 and generated `gluebindings.rs` as the rest of rust-mozjs.
 
-`GalileoMozjsGlueAbi_140_12_34` is the link contract. The generated Rust module
+`GalileoMozjsGlueAbi_140_12_35` is the link contract. The generated Rust module
 keeps an unconditional relocation to that symbol, and the integration test
 calls it. These checks make all stale combinations fail deterministically:
 
@@ -24,7 +24,7 @@ assets:
 
 ```text
 repository:  GalileoBrowser/mozjs
-release tag: galileo-mozjs-glue-abi-140.12.34
+release tag: galileo-mozjs-glue-abi-140.12.35
 asset name:  libmozjs-<Rust target>[-debugmozjs-O3].tar.gz
 ```
 
@@ -49,7 +49,7 @@ tests (and builds tests for OpenHarmony), and stages one verified artifact set.
 After it succeeds:
 
 1. Review and tag the tested commit as
-   `galileo-mozjs-glue-abi-140.12.34`.
+   `galileo-mozjs-glue-abi-140.12.35`.
 2. Create a GitHub release for that tag and attach every required archive from
    the staged `galileo-mozjs-glue-release-assets` workflow artifact.
 3. Generate GitHub build-provenance attestations for all attached archives.
@@ -174,3 +174,15 @@ behavior.
 The 140.12.33 prebuilt archives do not contain this wipe. Until a reviewed
 140.12.34 archive matrix is built and released, the ABI check must reject those
 archives and the build must use this exact pinned source.
+
+
+## Combined engine source revision: ABI 140.12.35
+
+This ABI combines the DifferentProcess structured-clone wiping from906b5a67
+with the native RegExp, BigInt, Iterator.concat and realm/proxy changes through
+e36c909c. Its new sentinel and release tag prevent the automatic archive
+loader from accepting an older140.12.34 native engine with newer source
+bindings. The existing typed source/wiping and same-process transferable
+destruction paths are preserved. This source integration is experimental:
+no native build, platform matrix, archive publication or runtime qualification
+is claimed by the pin or sentinel change.

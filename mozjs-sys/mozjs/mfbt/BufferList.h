@@ -54,6 +54,15 @@ class BufferList : private AllocPolicy {
   template <typename OtherAllocPolicy>
   friend class BufferList;
 
+  static void WipeAllocation(char* allocation, size_t capacity) {
+    volatile unsigned char* data =
+        reinterpret_cast<volatile unsigned char*>(allocation);
+    for (size_t i = 0; i < capacity; ++i) {
+      data[i] = 0;
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
+
  public:
   // For the convenience of callers, all segments are required to be a multiple
   // of 8 bytes in capacity. Also, every buffer except the last one is required
@@ -128,6 +137,7 @@ class BufferList : private AllocPolicy {
   bool CopyFrom(const BufferList& aOther) {
     MOZ_ASSERT(mOwning);
 
+    WipeContents();
     Clear();
 
     // We don't make an exact copy of aOther. Instead, create a single segment
@@ -158,13 +168,8 @@ class BufferList : private AllocPolicy {
     }
 
     for (Segment& segment : mSegments) {
-      volatile unsigned char* data =
-          reinterpret_cast<volatile unsigned char*>(segment.mData);
-      for (size_t i = 0; i < segment.mCapacity; ++i) {
-        data[i] = 0;
-      }
+      WipeAllocation(segment.mData, segment.mCapacity);
     }
-    std::atomic_signal_fence(std::memory_order_seq_cst);
   }
 
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) {
@@ -393,11 +398,13 @@ class BufferList : private AllocPolicy {
     // Don't create zero-length segments; that can cause problems for
     // consumers of the data (bug 1595453).
     if (aSize == 0) {
+      WipeAllocation(aData, aCapacity);
       this->free_(aData, aCapacity);
       return true;
     }
 
     if (!mSegments.append(Segment(aData, aSize, aCapacity))) {
+      WipeAllocation(aData, aCapacity);
       this->free_(aData, aCapacity);
       return false;
     }
@@ -586,12 +593,7 @@ size_t BufferList<AllocPolicy>::Truncate(IterImpl& aIter) {
     Segment& toFree = mSegments.back();
     mSize -= toFree.mSize;
     if (mOwning) {
-      volatile unsigned char* data =
-          reinterpret_cast<volatile unsigned char*>(toFree.mData);
-      for (size_t i = 0; i < toFree.mCapacity; ++i) {
-        data[i] = 0;
-      }
-      std::atomic_signal_fence(std::memory_order_seq_cst);
+      WipeAllocation(toFree.mData, toFree.mCapacity);
       this->free_(toFree.mData, toFree.mCapacity);
     }
     mSegments.popBack();
@@ -603,12 +605,7 @@ size_t BufferList<AllocPolicy>::Truncate(IterImpl& aIter) {
   if (mOwning) {
     const size_t wipeStart = static_cast<size_t>(aIter.mData - seg.mData);
     MOZ_ASSERT(wipeStart <= seg.mCapacity);
-    volatile unsigned char* data =
-        reinterpret_cast<volatile unsigned char*>(seg.mData);
-    for (size_t i = wipeStart; i < seg.mCapacity; ++i) {
-      data[i] = 0;
-    }
-    std::atomic_signal_fence(std::memory_order_seq_cst);
+    WipeAllocation(aIter.mData, seg.mCapacity - wipeStart);
   }
   mSize -= aIter.RemainingInSegment();
   seg.mSize -= aIter.RemainingInSegment();

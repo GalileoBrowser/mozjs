@@ -8,6 +8,7 @@
 #define mozilla_BufferList_h
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <numeric>
@@ -148,6 +149,23 @@ class BufferList : private AllocPolicy {
 
   // Returns the sum of the sizes of all the buffers.
   size_t Size() const { return mSize; }
+
+  // Wipe each owned allocation, including bytes beyond the initialized size.
+  // A borrowed BufferList does not own its storage and must not alter it.
+  void WipeContents() {
+    if (!mOwning) {
+      return;
+    }
+
+    for (Segment& segment : mSegments) {
+      volatile unsigned char* data =
+          reinterpret_cast<volatile unsigned char*>(segment.mData);
+      for (size_t i = 0; i < segment.mCapacity; ++i) {
+        data[i] = 0;
+      }
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
 
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) {
     size_t size = mSegments.sizeOfExcludingThis(aMallocSizeOf);
@@ -568,6 +586,12 @@ size_t BufferList<AllocPolicy>::Truncate(IterImpl& aIter) {
     Segment& toFree = mSegments.back();
     mSize -= toFree.mSize;
     if (mOwning) {
+      volatile unsigned char* data =
+          reinterpret_cast<volatile unsigned char*>(toFree.mData);
+      for (size_t i = 0; i < toFree.mCapacity; ++i) {
+        data[i] = 0;
+      }
+      std::atomic_signal_fence(std::memory_order_seq_cst);
       this->free_(toFree.mData, toFree.mCapacity);
     }
     mSegments.popBack();
@@ -576,6 +600,16 @@ size_t BufferList<AllocPolicy>::Truncate(IterImpl& aIter) {
   // The last segment is now aIter's current segment. Truncate or remove it.
   Segment& seg = mSegments.back();
   MOZ_ASSERT(aIter.mDataEnd == seg.End());
+  if (mOwning) {
+    const size_t wipeStart = static_cast<size_t>(aIter.mData - seg.mData);
+    MOZ_ASSERT(wipeStart <= seg.mCapacity);
+    volatile unsigned char* data =
+        reinterpret_cast<volatile unsigned char*>(seg.mData);
+    for (size_t i = wipeStart; i < seg.mCapacity; ++i) {
+      data[i] = 0;
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
   mSize -= aIter.RemainingInSegment();
   seg.mSize -= aIter.RemainingInSegment();
   if (!seg.mSize) {
@@ -584,7 +618,6 @@ size_t BufferList<AllocPolicy>::Truncate(IterImpl& aIter) {
     }
     mSegments.popBack();
   }
-
   // Correct `aIter` to point to the new end of the BufferList.
   if (mSegments.empty()) {
     MOZ_ASSERT(mSize == 0);

@@ -508,7 +508,19 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API JSStructuredCloneData {
         scope_(scope),
         ownTransferables_(ownership) {}
   JSStructuredCloneData(JSStructuredCloneData&& other) = default;
-  JSStructuredCloneData& operator=(JSStructuredCloneData&& other) = default;
+  JSStructuredCloneData& operator=(JSStructuredCloneData&& other) {
+    if (this != &other) {
+      Clear();
+      bufList_ = std::move(other.bufList_);
+      scope_ = other.scope_;
+      callbacks_ = other.callbacks_;
+      closure_ = other.closure_;
+      ownTransferables_ = other.ownTransferables_;
+      refsHeld_ = std::move(other.refsHeld_);
+      stringBufferRefsHeld_ = std::move(other.stringBufferRefsHeld_);
+    }
+    return *this;
+  }
   ~JSStructuredCloneData();
 
   void setCallbacks(const JSStructuredCloneCallbacks* callbacks, void* closure,
@@ -585,6 +597,7 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API JSStructuredCloneData {
 
   void Clear() {
     discardTransferables();
+    WipeSensitiveData();
     bufList_.Clear();
   }
 
@@ -630,6 +643,12 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API JSStructuredCloneData {
   void discardTransferables();
 
  private:
+  void WipeSensitiveData() {
+    // Release transferables before this point; then wipe every owned clone
+    // allocation, regardless of scope. Borrowed BufferLists are left intact.
+    bufList_.WipeContents();
+  }
+
   // This internal method exposes the real value of scope_. It's meant to be
   // used only when starting the writing.
   JS::StructuredCloneScope scopeForInternalWriting() const { return scope_; }

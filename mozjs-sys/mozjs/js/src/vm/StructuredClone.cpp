@@ -1049,7 +1049,10 @@ bool SCOutput::writeChars(const Latin1Char* p, size_t nchars) {
 
 }  // namespace js
 
-JSStructuredCloneData::~JSStructuredCloneData() { discardTransferables(); }
+JSStructuredCloneData::~JSStructuredCloneData() {
+  discardTransferables();
+  WipeSensitiveData();
+}
 
 // If the buffer contains Transferables, free them. Note that custom
 // Transferables will use the JSStructuredCloneCallbacks::freeTransfer() to

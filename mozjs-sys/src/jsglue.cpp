@@ -5,7 +5,6 @@
 #define __STDC_LIMIT_MACROS
 #include <stdint.h>
 
-#include <atomic>
 #include <type_traits>
 #include <utility>
 
@@ -1487,28 +1486,8 @@ void DeleteJSAutoStructuredCloneBuffer(JSAutoStructuredCloneBuffer* buf) {
     return;
   }
 
-  // Servo's Rust wrapper uses DifferentProcess buffers for both structured-
-  // clone writing and reading. Those buffers can contain page-provided data
-  // (including credentials and tokens) and are copied into a separate Rust
-  // wipe-on-drop allocation. Clear the native temporary before its allocator
-  // releases the BufferList segments. Other scopes can own same-process
-  // transferables whose cleanup needs the encoded bytes, so preserve their
-  // existing destruction path.
-  if (buf->scope() == JS::StructuredCloneScope::DifferentProcess) {
-    JSStructuredCloneData& data = buf->data();
-    JSStructuredCloneData::Iterator iter = data.Start();
-    while (!iter.Done()) {
-      volatile uint8_t* segment =
-          reinterpret_cast<volatile uint8_t*>(iter.Data());
-      const size_t segment_size = iter.RemainingInSegment();
-      for (size_t i = 0; i < segment_size; ++i) {
-        segment[i] = 0;
-      }
-      MOZ_RELEASE_ASSERT(data.Advance(iter, segment_size));
-    }
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-  }
-
+  // JSAutoStructuredCloneBuffer::clear() releases transferables and wipes
+  // each owned BufferList segment's full allocation capacity.
   js_delete(buf);
 }
 

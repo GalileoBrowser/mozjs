@@ -1965,6 +1965,7 @@ bool GalileoMozjsStringCharsArenaOomWitness(JSContext* cx, uint32_t length) {
 }
 
 #if defined(JS_OOM_BREAKPOINT)
+#  ifndef RUST_BINDGEN
 static std::atomic<bool> galileo_string_chars_wipe_armed{false};
 static std::atomic<uint64_t> galileo_string_chars_wipe_expected_bytes{0};
 static std::atomic<uint32_t> galileo_string_chars_wipe_count{0};
@@ -2010,6 +2011,15 @@ bool GalileoMozjsStringCharsWipeObserverAllZero() {
 void GalileoMozjsDisarmStringCharsWipeObserver() {
   galileo_string_chars_wipe_armed.store(false, std::memory_order_release);
 }
+#  else
+// Keep private observer storage out of generated Rust bindings.  Bindgen only
+// needs the callable test hooks; the real state exists in the native build.
+void GalileoMozjsArmStringCharsWipeObserver(uint64_t) {}
+void GalileoMozjsObserveStringCharsWipe(const void*, size_t) {}
+uint32_t GalileoMozjsStringCharsWipeObserverCount() { return 0; }
+bool GalileoMozjsStringCharsWipeObserverAllZero() { return true; }
+void GalileoMozjsDisarmStringCharsWipeObserver() {}
+#  endif
 #endif
 
 void GalileoMozjsResetOomSimulator() {

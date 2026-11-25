@@ -61,6 +61,7 @@
 #  include "vm/JSScript.h"
 #  include "vm/NativeErrorStack.h"
 #  include "vm/NativeInvocation.h"
+#  include "vm/StringType.h"
 #  include "js/CallAndConstruct.h"
 #  include "js/GCAPI.h"
 #endif
@@ -1935,6 +1936,27 @@ bool GalileoMozjsHadSimulatedOom() {
 #if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
   return js::oom::HadSimulatedOOM();
 #else
+  return false;
+#endif
+}
+
+// Exercise the exact StringChars -> StringBufferArena allocation path under
+// SpiderMonkey's own failure simulator.  The Rust libc interposer cannot
+// identify arena ownership; this helper keeps the attribution inside the
+// engine while remaining an opt-in test-only symbol.
+bool GalileoMozjsStringCharsArenaOomWitness(JSContext* cx, uint32_t length) {
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+  if (!cx || length == 0) {
+    return false;
+  }
+  js::StringChars<JS::Latin1Char> chars(cx);
+  if (chars.maybeAlloc(cx, length)) {
+    return false;
+  }
+  return js::oom::HadSimulatedOOM();
+#else
+  (void)cx;
+  (void)length;
   return false;
 #endif
 }

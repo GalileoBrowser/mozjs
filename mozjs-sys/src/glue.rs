@@ -39,6 +39,11 @@ unsafe extern "C" {
     fn galileo_mozjs_simulate_oom_after(checks: u64);
     #[link_name = "GalileoMozjsHadSimulatedOom"]
     fn galileo_mozjs_had_simulated_oom() -> bool;
+    #[link_name = "GalileoMozjsStringCharsArenaOomWitness"]
+    fn galileo_mozjs_string_chars_arena_oom_witness(
+        cx: *mut crate::jsapi::JSContext,
+        length: u32,
+    ) -> bool;
     #[link_name = "GalileoMozjsResetOomSimulator"]
     fn galileo_mozjs_reset_oom_simulator();
 }
@@ -58,6 +63,20 @@ pub fn galileo_simulate_oom_after(checks: u64) {
 pub fn galileo_had_simulated_oom() -> bool {
     // SAFETY: this is a read-only query of the matching native simulator.
     unsafe { galileo_mozjs_had_simulated_oom() }
+}
+
+/// Exercise StringChars' StringBufferArena allocation under the native OOM
+/// simulator. Returns false when the allocation succeeds or the simulator is
+/// unavailable in a non-test engine build.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_string_chars_arena_oom_witness(
+    cx: *mut crate::jsapi::JSContext,
+    length: u32,
+) -> bool {
+    // SAFETY: `cx` is the current live context supplied by the owning test
+    // runtime, and the native helper does not retain it beyond this call.
+    unsafe { galileo_mozjs_string_chars_arena_oom_witness(cx, length) }
 }
 
 /// Reset the simulator before releasing Rust-side test owners.

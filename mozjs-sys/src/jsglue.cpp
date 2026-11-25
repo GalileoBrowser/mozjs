@@ -5,6 +5,7 @@
 #define __STDC_LIMIT_MACROS
 #include <stdint.h>
 
+#include <atomic>
 #include <type_traits>
 #include <utility>
 
@@ -1962,6 +1963,54 @@ bool GalileoMozjsStringCharsArenaOomWitness(JSContext* cx, uint32_t length) {
   return false;
 #endif
 }
+
+#if defined(JS_OOM_BREAKPOINT)
+static std::atomic<bool> galileo_string_chars_wipe_armed{false};
+static std::atomic<uint64_t> galileo_string_chars_wipe_expected_bytes{0};
+static std::atomic<uint32_t> galileo_string_chars_wipe_count{0};
+static std::atomic<bool> galileo_string_chars_wipe_all_zero{true};
+
+void GalileoMozjsArmStringCharsWipeObserver(uint64_t expected_bytes) {
+  galileo_string_chars_wipe_expected_bytes.store(expected_bytes,
+                                                  std::memory_order_relaxed);
+  galileo_string_chars_wipe_count.store(0, std::memory_order_relaxed);
+  galileo_string_chars_wipe_all_zero.store(true, std::memory_order_relaxed);
+  galileo_string_chars_wipe_armed.store(true, std::memory_order_release);
+}
+
+void GalileoMozjsObserveStringCharsWipe(const void* chars, size_t bytes) {
+  if (!galileo_string_chars_wipe_armed.load(std::memory_order_acquire) ||
+      !chars ||
+      bytes != galileo_string_chars_wipe_expected_bytes.load(
+                   std::memory_order_relaxed)) {
+    return;
+  }
+
+  const volatile unsigned char* data =
+      reinterpret_cast<const volatile unsigned char*>(chars);
+  bool all_zero = true;
+  for (size_t index = 0; index < bytes; ++index) {
+    all_zero &= data[index] == 0;
+  }
+  if (!all_zero) {
+    galileo_string_chars_wipe_all_zero.store(false,
+                                              std::memory_order_relaxed);
+  }
+  galileo_string_chars_wipe_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint32_t GalileoMozjsStringCharsWipeObserverCount() {
+  return galileo_string_chars_wipe_count.load(std::memory_order_acquire);
+}
+
+bool GalileoMozjsStringCharsWipeObserverAllZero() {
+  return galileo_string_chars_wipe_all_zero.load(std::memory_order_acquire);
+}
+
+void GalileoMozjsDisarmStringCharsWipeObserver() {
+  galileo_string_chars_wipe_armed.store(false, std::memory_order_release);
+}
+#endif
 
 void GalileoMozjsResetOomSimulator() {
 #if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)

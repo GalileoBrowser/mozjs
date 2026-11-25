@@ -44,6 +44,14 @@ unsafe extern "C" {
         cx: *mut crate::jsapi::JSContext,
         length: u32,
     ) -> bool;
+    #[link_name = "GalileoMozjsArmStringCharsWipeObserver"]
+    fn galileo_mozjs_arm_string_chars_wipe_observer(expected_bytes: u64);
+    #[link_name = "GalileoMozjsStringCharsWipeObserverCount"]
+    fn galileo_mozjs_string_chars_wipe_observer_count() -> u32;
+    #[link_name = "GalileoMozjsStringCharsWipeObserverAllZero"]
+    fn galileo_mozjs_string_chars_wipe_observer_all_zero() -> bool;
+    #[link_name = "GalileoMozjsDisarmStringCharsWipeObserver"]
+    fn galileo_mozjs_disarm_string_chars_wipe_observer();
     #[link_name = "GalileoMozjsResetOomSimulator"]
     fn galileo_mozjs_reset_oom_simulator();
 }
@@ -77,6 +85,38 @@ pub fn galileo_string_chars_arena_oom_witness(
     // SAFETY: `cx` is the current live context supplied by the owning test
     // runtime, and the native helper does not retain it beyond this call.
     unsafe { galileo_mozjs_string_chars_arena_oom_witness(cx, length) }
+}
+
+/// Arm the test-only observer for a live temporary StringChars allocation.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_arm_string_chars_wipe_observer(expected_bytes: u64) {
+    // SAFETY: this only updates process-local observer state.
+    unsafe { galileo_mozjs_arm_string_chars_wipe_observer(expected_bytes) }
+}
+
+/// Return the number of matching live StringChars wipe callbacks observed.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_string_chars_wipe_observer_count() -> u32 {
+    // SAFETY: this is a read-only query of process-local observer state.
+    unsafe { galileo_mozjs_string_chars_wipe_observer_count() }
+}
+
+/// Return whether every matching observed allocation was zero at the callback.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_string_chars_wipe_observer_all_zero() -> bool {
+    // SAFETY: this is a read-only query of process-local observer state.
+    unsafe { galileo_mozjs_string_chars_wipe_observer_all_zero() }
+}
+
+/// Stop observing before the live native owner is released.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_disarm_string_chars_wipe_observer() {
+    // SAFETY: this only updates process-local observer state.
+    unsafe { galileo_mozjs_disarm_string_chars_wipe_observer() }
 }
 
 /// Reset the simulator before releasing Rust-side test owners.

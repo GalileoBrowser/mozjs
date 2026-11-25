@@ -38,6 +38,11 @@ class JSExternalString;
 class JSInlineString;
 class JSRope;
 
+#if defined(JS_OOM_BREAKPOINT)
+extern "C" void GalileoMozjsObserveStringCharsWipe(const void* chars,
+                                                    size_t bytes);
+#endif
+
 namespace JS {
 class JS_PUBLIC_API AutoStableStringChars;
 }  // namespace JS
@@ -2100,6 +2105,11 @@ class MOZ_NON_PARAM StringChars {
       data[i] = 0;
     }
     std::atomic_signal_fence(std::memory_order_seq_cst);
+#if defined(JS_OOM_BREAKPOINT)
+    // The test-only observer runs while the owned allocation is still live;
+    // OwnedChars releases it only after this destructor returns.
+    GalileoMozjsObserveStringCharsWipe(chars, bytes);
+#endif
   }
 
 #ifdef DEBUG

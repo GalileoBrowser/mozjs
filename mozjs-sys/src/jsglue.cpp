@@ -1950,7 +1950,9 @@ bool GalileoMozjsStringCharsArenaOomWitness(JSContext* cx, uint32_t length) {
     return false;
   }
   js::StringChars<JS::Latin1Char> chars(cx);
-  if (chars.maybeAlloc(cx, length)) {
+  // Force the non-nursery allocation branch so the witness is specifically
+  // the StringBufferArena path, not an unrelated nursery buffer.
+  if (chars.maybeAlloc(cx, length, js::gc::Heap::Tenured)) {
     return false;
   }
   return js::oom::HadSimulatedOOM();

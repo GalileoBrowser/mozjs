@@ -42,6 +42,12 @@ ifneq (,$(CARGO_FEATURE_DEBUGMOZJS))
 	endif
 endif
 
+# Keep SpiderMonkey's native failure simulator out of ordinary production
+# archives. The opt-in feature is used only by focused native tests.
+ifneq (,$(CARGO_FEATURE_OOM_SIMULATOR))
+	CONFIGURE_FLAGS += --enable-oom-breakpoint
+endif
+
 ifneq (,$(CARGO_FEATURE_PROFILEMOZJS))
 	# ESR source disables JIT symbols by default. Profiling builds need the
 	# native jitdump emitter so perf can resolve generated Baseline/Ion code.

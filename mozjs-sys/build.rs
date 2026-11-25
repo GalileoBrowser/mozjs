@@ -661,6 +661,12 @@ fn cc_flags(bindgen: bool) -> Vec<&'static str> {
         }
     }
 
+    if env::var_os("CARGO_FEATURE_OOM_SIMULATOR").is_some() {
+        // Keep the native OOM simulator available to the test-only glue hooks
+        // without turning the whole engine into a debug build.
+        flags.push("-DJS_OOM_BREAKPOINT");
+    }
+
     let is_apple = target.contains("apple");
     let is_freebsd = target.contains("freebsd");
     let is_ohos = target.contains("ohos");

@@ -33,6 +33,41 @@ pub fn galileo_mozjs_glue_abi() -> u32 {
     unsafe { GalileoMozjsGlueAbi_140_12_35() }
 }
 
+#[cfg(feature = "oom_simulator")]
+unsafe extern "C" {
+    #[link_name = "GalileoMozjsSimulateOomAfter"]
+    fn galileo_mozjs_simulate_oom_after(checks: u64);
+    #[link_name = "GalileoMozjsHadSimulatedOom"]
+    fn galileo_mozjs_had_simulated_oom() -> bool;
+    #[link_name = "GalileoMozjsResetOomSimulator"]
+    fn galileo_mozjs_reset_oom_simulator();
+}
+
+/// Arm SpiderMonkey's native OOM simulator for a focused failure-path test.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_simulate_oom_after(checks: u64) {
+    // SAFETY: the matching `libjsglue` translation unit owns this process-local
+    // simulator and accepts any counter value.
+    unsafe { galileo_mozjs_simulate_oom_after(checks) }
+}
+
+/// Report whether the simulator reached its configured failure point.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_had_simulated_oom() -> bool {
+    // SAFETY: this is a read-only query of the matching native simulator.
+    unsafe { galileo_mozjs_had_simulated_oom() }
+}
+
+/// Reset the simulator before releasing Rust-side test owners.
+#[cfg(feature = "oom_simulator")]
+#[inline]
+pub fn galileo_reset_oom_simulator() {
+    // SAFETY: reset is required by SpiderMonkey's simulator contract.
+    unsafe { galileo_mozjs_reset_oom_simulator() }
+}
+
 // manual glue stuff
 unsafe impl Sync for ProxyTraps {}
 

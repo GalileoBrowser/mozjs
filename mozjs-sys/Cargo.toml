@@ -26,6 +26,9 @@ libz-rs = ["dep:libz-rs-sys"]
 intl = ["dep:icu_capi"]
 crown = []
 oom_with_hook = []
+# Enables SpiderMonkey's test-only OOM failure simulator. This is deliberately
+# opt-in and is used only by structured-clone failure-path qualification.
+oom_simulator = []
 
 [dependencies]
 libc.workspace = true

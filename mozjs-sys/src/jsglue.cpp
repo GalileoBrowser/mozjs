@@ -48,6 +48,7 @@
 #include "mozilla/Unused.h"
 
 #ifndef RUST_BINDGEN
+#  include "js/Utility.h"
 #  include "js/AllocPolicy.h"
 #  include "js/Array.h"
 #  include "js/PropertyAndElement.h"
@@ -1914,6 +1915,34 @@ const JS::Value* StackGCVectorValueAtIndex(
 JSString* const* StackGCVectorStringAtIndex(
     JS::Handle<JS::StackGCVector<JSString*>> vec, uint32_t index) {
   return vec.begin() + index;
+}
+
+// These hooks are intentionally test-only. They expose SpiderMonkey's
+// existing failure simulator to the Rust structured-clone regression without
+// changing release behavior or fabricating allocator failures in Rust.
+void GalileoMozjsSimulateOomAfter(uint64_t checks) {
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+  js::oom::InitThreadType();
+  js::oom::SetThreadType(js::THREAD_TYPE_MAIN);
+  js::oom::simulator.simulateFailureAfter(
+      js::oom::FailureSimulator::Kind::OOM, checks, js::THREAD_TYPE_MAIN, true);
+#else
+  (void)checks;
+#endif
+}
+
+bool GalileoMozjsHadSimulatedOom() {
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+  return js::oom::HadSimulatedOOM();
+#else
+  return false;
+#endif
+}
+
+void GalileoMozjsResetOomSimulator() {
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+  js::oom::simulator.reset();
+#endif
 }
 
 }  // extern "C"

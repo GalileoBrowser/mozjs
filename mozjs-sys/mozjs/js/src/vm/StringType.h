@@ -2090,6 +2090,18 @@ class MOZ_NON_PARAM StringChars {
   CharT inlineChars_[InlineLength];
   Rooted<JSString::OwnedChars<CharT>> ownedChars_;
 
+  void wipeTemporaryChars() {
+    CharT* chars = ownedChars_ ? ownedChars_.data() : inlineChars_;
+    size_t bytes =
+        ownedChars_ ? ownedChars_.size() : InlineLength * sizeof(CharT);
+    volatile unsigned char* data =
+        reinterpret_cast<volatile unsigned char*>(chars);
+    for (size_t i = 0; i < bytes; ++i) {
+      data[i] = 0;
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
+
 #ifdef DEBUG
   // In debug mode, we keep track of the requested string lengths to ensure all
   // methods are called in the correct order and with the expected argument
@@ -2107,6 +2119,7 @@ class MOZ_NON_PARAM StringChars {
 
  public:
   explicit StringChars(JSContext* cx) : ownedChars_(cx) {}
+  ~StringChars() { wipeTemporaryChars(); }
 
   /**
    * Return a raw pointer to the string characters. The pointer can point to

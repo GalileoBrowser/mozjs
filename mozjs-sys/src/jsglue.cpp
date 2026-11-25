@@ -1946,7 +1946,7 @@ bool GalileoMozjsHadSimulatedOom() {
 // identify arena ownership; this helper keeps the attribution inside the
 // engine while remaining an opt-in test-only symbol.
 bool GalileoMozjsStringCharsArenaOomWitness(JSContext* cx, uint32_t length) {
-#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+#if (defined(DEBUG) || defined(JS_OOM_BREAKPOINT)) && !defined(RUST_BINDGEN)
   if (!cx || length == 0) {
     return false;
   }

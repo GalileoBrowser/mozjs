@@ -15,6 +15,7 @@
 #include "mozilla/StringBuffer.h"
 #include "mozilla/TextUtils.h"
 
+#include <atomic>
 #include <string_view>  // std::basic_string_view
 
 #include "jstypes.h"  // js::Bit
@@ -2198,6 +2199,22 @@ class MOZ_NON_PARAM AtomStringChars {
    * Build the result atom string.
    */
   JSAtom* toAtom(JSContext* cx, size_t length);
+
+  /**
+   * Erase owned temporary characters after atomization or a failed read.
+   * AtomizeChars copies its input; it does not take ownership of this storage.
+   * Clear the entire inline allocation, or the exact requested heap capacity.
+   */
+  void wipeChars(size_t length) {
+    MOZ_ASSERT(length == lastRequestedLength_);
+    const size_t capacity = mallocChars_ ? length : InlineLength;
+    volatile unsigned char* bytes =
+        reinterpret_cast<volatile unsigned char*>(data());
+    for (size_t i = 0; i < capacity * sizeof(CharT); ++i) {
+      bytes[i] = 0;
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
 };
 
 /*** Conversions ************************************************************/

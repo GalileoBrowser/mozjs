@@ -2583,8 +2583,11 @@ JSString* JSStructuredCloneReader::readStringImpl(
     uint32_t nchars, ShouldAtomizeStrings atomize) {
   if (atomize) {
     AtomStringChars<CharT> chars;
-    if (!chars.maybeAlloc(context(), nchars) ||
-        !in.readChars(chars.data(), nchars)) {
+    if (!chars.maybeAlloc(context(), nchars)) {
+      return nullptr;
+    }
+    auto wipeChars = mozilla::MakeScopeExit([&] { chars.wipeChars(nchars); });
+    if (!in.readChars(chars.data(), nchars)) {
       return nullptr;
     }
     return chars.toAtom(context(), nchars);
